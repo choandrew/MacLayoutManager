@@ -61,44 +61,57 @@ CNF
         || echo "  add-trusted-cert skipped; signing usually still works untrusted"
 }
 
-# Both paths install from the release zip, so CI's --build run covers the unzip a download goes through.
-case "$*" in
-    "")
-        ZIP="$WORK/$APP_NAME.zip"
-        curl -fsSL -o "$ZIP" "$RELEASE_URL"
-        ;;
-    --build)
-        cd "$(dirname "$0")"
-        app/build.sh
-        ZIP="app/build/$APP_NAME.zip"
-        ;;
-    *)
-        echo "usage: setup.sh [--build]" >&2
-        exit 2
-        ;;
-esac
-ditto -x -k "$ZIP" "$WORK"
-APP="$WORK/$APP_NAME.app"
+# `curl | bash` runs lines as they arrive, so every step lives in main: a download cut short never
+# reaches the call and leaves the current install alone.
+main() {
+    local zip app bundle_id
+    # Both paths install from the release zip, so CI's --build run covers the unzip a download goes
+    # through.
+    case "$*" in
+        "")
+            zip="$WORK/$APP_NAME.zip"
+            curl -fsSL -o "$zip" "$RELEASE_URL"
+            ;;
+        --build)
+            cd "$(dirname "$0")"
+            app/build.sh
+            zip="app/build/$APP_NAME.zip"
+            ;;
+        *)
+            echo "usage: setup.sh [--build]" >&2
+            exit 2
+            ;;
+    esac
+    ditto -x -k "$zip" "$WORK"
+    app="$WORK/$APP_NAME.app"
 
-if [ -z "${CODESIGN_IDENTITY:-}" ]; then
-    CODESIGN_IDENTITY="$LOCAL_IDENTITY"
-    security find-identity -v -p codesigning "$KEYCHAIN" 2>/dev/null | grep -q "\"$LOCAL_IDENTITY\"" \
-        || create_local_identity
-fi
+    if [ -z "${CODESIGN_IDENTITY:-}" ]; then
+        CODESIGN_IDENTITY="$LOCAL_IDENTITY"
+        # Without -v the list includes an identity whose trust step failed, so a rerun reuses it instead
+        # of importing a second one that makes the name ambiguous to codesign. grep reads to EOF, so
+        # security can't die of SIGPIPE and fail the pipeline.
+        security find-identity -p codesigning "$KEYCHAIN" 2>/dev/null \
+            | grep -F "\"$LOCAL_IDENTITY\"" >/dev/null \
+            || create_local_identity
+    fi
 
-BUNDLE_ID="$(plutil -extract CFBundleIdentifier raw "$APP/Contents/Info.plist")"
-xattr -cr "$APP"
-codesign --force --options runtime --identifier "$BUNDLE_ID.helper" \
-    --sign "$CODESIGN_IDENTITY" "$APP/Contents/Helpers/MacLayoutHelper"
-codesign --force --options runtime --sign "$CODESIGN_IDENTITY" "$APP"
+    bundle_id="$(plutil -extract CFBundleIdentifier raw "$app/Contents/Info.plist")"
+    xattr -cr "$app"
+    codesign --force --options runtime --identifier "$bundle_id.helper" \
+        --sign "$CODESIGN_IDENTITY" "$app/Contents/Helpers/MacLayoutHelper"
+    codesign --force --options runtime --sign "$CODESIGN_IDENTITY" "$app"
+    # Verifies before touching /Applications, so a bad signature leaves the current install running.
+    codesign --verify --deep --strict "$app"
 
-pkill -f "$APP_NAME.app/Contents/MacOS/$APP_NAME" 2>/dev/null || true
-for _ in 1 2 3 4 5; do
-    pgrep -f "$APP_NAME.app/Contents/MacOS/$APP_NAME" >/dev/null || break
-    sleep 1
-done
-rm -rf "$INSTALLED_APP"
-cp -R "$APP" /Applications/
-codesign --verify --deep --strict "$INSTALLED_APP"
-open "$INSTALLED_APP"
-echo "$APP_NAME is in the menu bar, signed by $CODESIGN_IDENTITY"
+    pkill -f "$APP_NAME.app/Contents/MacOS/$APP_NAME" 2>/dev/null || true
+    for _ in 1 2 3 4 5; do
+        pgrep -f "$APP_NAME.app/Contents/MacOS/$APP_NAME" >/dev/null || break
+        sleep 1
+    done
+    rm -rf "$INSTALLED_APP"
+    cp -R "$app" /Applications/
+    open "$INSTALLED_APP"
+    echo "$APP_NAME is in the menu bar, signed by $CODESIGN_IDENTITY"
+}
+
+main "$@"

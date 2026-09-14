@@ -26,10 +26,16 @@ jobs:
         env:
           CODESIGN_IDENTITY: "-"
 
-      # Publishes the unsigned zip setup.sh just installed. setup.sh ships with it so the installer
-      # always matches the bundle layout it signs.
+      # Publishes the unsigned zip setup.sh just installed, with a setup.sh that downloads the zip from
+      # this release instead of the latest one, so the installer always matches the bundle layout it signs.
       - name: Publish release
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" app/build/MacLayoutManager.zip setup.sh --generate-notes
+        run: |
+          pinned="/releases/download/$GITHUB_REF_NAME/"
+          sed "s|/releases/latest/download/|$pinned|" setup.sh > "$RUNNER_TEMP/setup.sh"
+          grep -F "RELEASE_URL=\"https://github.com/choandrew/MacLayoutManager$pinned" "$RUNNER_TEMP/setup.sh" >/dev/null \
+            || { echo "setup.sh RELEASE_URL was not pinned to $GITHUB_REF_NAME" >&2; exit 1; }
+          gh release create "$GITHUB_REF_NAME" app/build/MacLayoutManager.zip "$RUNNER_TEMP/setup.sh" \
+            --generate-notes

@@ -19,6 +19,9 @@ SWIFT_FLAGS=(-swift-version 6 -parse-as-library -target arm64-apple-macos15.0 -w
     -import-objc-header HelperProtocol.h)
 CORE_SOURCES=(HelperProtocol.swift Layout.swift LayoutLibrary.swift Placement.swift)
 
+xcode-select --print-path >/dev/null 2>&1 \
+    || { echo "Xcode command line tools missing: run xcode-select --install" >&2; exit 1; }
+
 cd "$(dirname "$0")"
 rm -rf build
 mkdir -p "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Helpers" build/tests
