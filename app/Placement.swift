@@ -121,6 +121,40 @@ func restorePlan<Handle>(
     return moves
 }
 
+/// The apps a restore opened, watched while their windows appear. An app leaves the watch once it
+/// shows a window and its window count holds for `settleTime`, which also outlasts an app moving its
+/// own new windows. Every app leaves at `timeout`, since an app can open no window at all.
+struct OpeningApps {
+    static let pollInterval = Duration.milliseconds(500)
+    static let settleTime = Duration.seconds(2)
+    static let timeout = Duration.seconds(15)
+
+    private let started: ContinuousClock.Instant
+    /// Each watched app's latest window count and when that count last changed.
+    private var watched: [String: (count: Int, since: ContinuousClock.Instant)]
+
+    init(_ bundleIDs: Set<String>, at now: ContinuousClock.Instant) {
+        started = now
+        watched = Dictionary(uniqueKeysWithValues: bundleIDs.map { ($0, (0, now)) })
+    }
+
+    var bundleIDs: Set<String> { Set(watched.keys) }
+
+    /// Records the windows seen at `now`, one bundle ID per window, and drops the apps that settled.
+    mutating func observe(_ windowOwners: [String], at now: ContinuousClock.Instant) {
+        guard now - started < Self.timeout else {
+            watched = [:]
+            return
+        }
+        let counts = Dictionary(windowOwners.map { ($0, 1) }, uniquingKeysWith: +)
+        for (bundleID, last) in watched {
+            let count = counts[bundleID, default: 0]
+            let since = count == last.count ? last.since : now
+            watched[bundleID] = count > 0 && now - since >= Self.settleTime ? nil : (count, since)
+        }
+    }
+}
+
 extension CGRect {
     var area: CGFloat { width * height }
 

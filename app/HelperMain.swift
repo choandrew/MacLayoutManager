@@ -82,12 +82,67 @@ enum HelperMain {
     }
 
     private static func capture(on displays: DisplayArrangement) throws -> [ScreenLayout] {
-        captureScreens(of: try AccessibilityWindows.windows { _ in true }, on: displays)
+        captureScreens(of: try AccessibilityWindows.scan { _ in true }.movable, on: displays)
     }
 
+    /// Names the apps a restore couldn't open, whose windows stay unplaced.
+    private struct UnopenedApps: LocalizedError {
+        let bundleIDs: Set<String>
+
+        var errorDescription: String? {
+            "Couldn't open \(bundleIDs.sorted().joined(separator: ", "))."
+        }
+    }
+
+    /// Moves the layout's open windows first, then opens its apps that own no standard window and
+    /// places their windows as they appear.
     private static func restore(_ layout: Layout, on displays: DisplayArrangement) throws {
         let bundleIDs = Set(layout.screens.flatMap { $0.windows.map(\.bundleID) })
-        let windows = try AccessibilityWindows.windows { bundleIDs.contains($0) }
-        AccessibilityWindows.apply(restorePlan(for: layout, windows: windows, displays: displays))
+        let windowless = bundleIDs.subtracting(
+            try place(layout, appsIn: bundleIDs, on: displays).owners)
+
+        let unopened = openApps(windowless)
+        var opening = OpeningApps(windowless.subtracting(unopened), at: .now)
+        while !opening.bundleIDs.isEmpty {
+            Thread.sleep(forTimeInterval: OpeningApps.pollInterval / .seconds(1))
+            let scan = try place(layout, appsIn: opening.bundleIDs, on: displays)
+            opening.observe(scan.movable.map(\.bundleID), at: .now)
+        }
+        if !unopened.isEmpty {
+            throw UnopenedApps(bundleIDs: unopened)
+        }
+    }
+
+    private static func place(
+        _ layout: Layout, appsIn bundleIDs: Set<String>, on displays: DisplayArrangement
+    ) throws -> AccessibilityWindows.Scan {
+        let scan = try AccessibilityWindows.scan { bundleIDs.contains($0) }
+        AccessibilityWindows.apply(
+            restorePlan(for: layout, windows: scan.movable, displays: displays))
+        return scan
+    }
+
+    /// Opens each app without bringing it forward: `open` launches an app that isn't running and
+    /// asks a running one to reopen a window. Returns the apps it couldn't open, such as uninstalled
+    /// ones.
+    private static func openApps(_ bundleIDs: Set<String>) -> Set<String> {
+        let launches = bundleIDs.map { bundleID -> (String, Process?) in
+            let process = Process()
+            process.executableURL = URL(filePath: "/usr/bin/open")
+            process.arguments = ["-g", "-b", bundleID]
+            // The helper's standard output carries the protocol.
+            process.standardOutput = FileHandle.nullDevice
+            do {
+                try process.run()
+                return (bundleID, process)
+            } catch {
+                return (bundleID, nil)
+            }
+        }
+        return Set(
+            launches.compactMap { bundleID, process in
+                process?.waitUntilExit()
+                return process?.terminationStatus == 0 ? nil : bundleID
+            })
     }
 }

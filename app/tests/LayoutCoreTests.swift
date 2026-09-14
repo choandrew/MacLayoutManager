@@ -28,6 +28,7 @@ struct LayoutCoreTests {
             try tests.captureThenRestoreReproducesFrames()
             try tests.restoreMatchesTitlesBeforeOrder()
             try tests.restoreScalesWindowsFromMissingDisplayOntoMain()
+            try tests.openingAppsLeaveOnceTheirWindowsSettle()
             try tests.identicalMonitorsGetDistinctIDsLeftToRight()
             try tests.replacingScreensKeepsAutoRestoreAndTakesItOver()
             try tests.autoRestoreIsExclusivePerDisplaySet()
@@ -134,6 +135,27 @@ struct LayoutCoreTests {
         expect(
             moves.map(\.frame) == [CGRect(x: 756, y: 33, width: 756, height: 949)],
             "scaled onto main display")
+    }
+
+    mutating func openingAppsLeaveOnceTheirWindowsSettle() throws {
+        let start = ContinuousClock.now
+        func at(_ milliseconds: Int64) -> ContinuousClock.Instant {
+            start + .milliseconds(milliseconds)
+        }
+        var opening = OpeningApps(["growing", "single", "none"], at: start)
+
+        opening.observe(["growing", "single"], at: at(1000))
+        opening.observe(["growing", "single", "growing"], at: at(2500))
+        expect(opening.bundleIDs == ["growing", "single", "none"], "new windows keep apps watched")
+        opening.observe(["growing", "single", "growing"], at: at(3000))
+        expect(
+            opening.bundleIDs == ["growing", "none"], "settling counts from the last new window")
+        opening.observe(["growing", "growing"], at: at(4500))
+        expect(opening.bundleIDs == ["none"], "a steady window count leaves")
+        opening.observe([], at: at(14_999))
+        expect(opening.bundleIDs == ["none"], "an app with no window waits")
+        opening.observe([], at: start + OpeningApps.timeout)
+        expect(opening.bundleIDs.isEmpty, "the timeout ends the watch")
     }
 
     mutating func identicalMonitorsGetDistinctIDsLeftToRight() throws {
