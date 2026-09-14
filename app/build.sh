@@ -1,14 +1,15 @@
 #!/bin/bash
 # Builds app/build/MacLayoutManager.app: a size-optimized Objective-C host that stays running and a
-# Swift helper it spawns per command. Runs both test suites before signing.
+# Swift helper it spawns per command. Runs both test suites first. The bundle stays unsigned: setup.sh
+# signs it at install with the identity that holds the Accessibility grant. app/build/MacLayoutManager.zip
+# holds the bundle as a release publishes it.
 set -euo pipefail
 
 APP_NAME="MacLayoutManager"
-BUNDLE_ID="com.choandrew.MacLayoutManager"
 APP_PATH="build/$APP_NAME.app"
+ZIP_PATH="build/$APP_NAME.zip"
 EXECUTABLE="$APP_PATH/Contents/MacOS/$APP_NAME"
 HELPER="$APP_PATH/Contents/Helpers/MacLayoutHelper"
-LOCAL_SIGNING_IDENTITY="MacLayoutManager Dev"
 PROTOCOL_FIXTURE="tests/protocol-output.txt"
 
 # Tests compile with the release target and warnings, so a warning can't hide in either build.
@@ -18,14 +19,8 @@ SWIFT_FLAGS=(-swift-version 6 -parse-as-library -target arm64-apple-macos15.0 -w
     -import-objc-header HelperProtocol.h)
 CORE_SOURCES=(HelperProtocol.swift Layout.swift LayoutLibrary.swift Placement.swift)
 
-# A stable identity keeps the Accessibility grant across rebuilds; an ad-hoc signature is a new app
-# to macOS every time.
-if [ -z "${CODESIGN_IDENTITY+x}" ]; then
-    case "$(security find-identity -v -p codesigning 2>/dev/null || true)" in
-        *\"$LOCAL_SIGNING_IDENTITY\"*) CODESIGN_IDENTITY="$LOCAL_SIGNING_IDENTITY" ;;
-        *) CODESIGN_IDENTITY="-" ;;
-    esac
-fi
+xcode-select --print-path >/dev/null 2>&1 \
+    || { echo "Xcode command line tools missing: run xcode-select --install" >&2; exit 1; }
 
 cd "$(dirname "$0")"
 rm -rf build
@@ -64,11 +59,6 @@ xcrun swiftc "${SWIFT_FLAGS[@]}" \
 
 cp Info.plist "$APP_PATH/Contents/Info.plist"
 printf 'APPL????' > "$APP_PATH/Contents/PkgInfo"
+ditto -c -k --keepParent "$APP_PATH" "$ZIP_PATH"
 
-xattr -cr "$APP_PATH"
-codesign --force --options runtime --identifier "$BUNDLE_ID.helper" \
-    --sign "$CODESIGN_IDENTITY" "$HELPER"
-codesign --force --options runtime --sign "$CODESIGN_IDENTITY" "$APP_PATH"
-codesign --verify --deep --strict --verbose=2 "$APP_PATH"
-
-echo "Built $APP_PATH for Apple silicon, signed by $CODESIGN_IDENTITY"
+echo "Built $APP_PATH and $ZIP_PATH for Apple silicon"

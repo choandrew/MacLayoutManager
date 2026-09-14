@@ -1,0 +1,41 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: macos-26
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check tag matches Info.plist version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version="v$(plutil -extract CFBundleShortVersionString raw app/Info.plist)"
+          [ "$GITHUB_REF_NAME" = "$version" ] \
+            || { echo "Tag $GITHUB_REF_NAME does not match Info.plist version $version" >&2; exit 1; }
+
+      # Ad-hoc signing covers setup.sh's signing and install steps without a keychain identity.
+      - run: ./setup.sh --build
+        env:
+          CODESIGN_IDENTITY: "-"
+
+      # Publishes the unsigned zip setup.sh just installed, with a setup.sh that downloads the zip from
+      # this release instead of the latest one, so the installer always matches the bundle layout it signs.
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pinned="/releases/download/$GITHUB_REF_NAME/"
+          sed "s|/releases/latest/download/|$pinned|" setup.sh > "$RUNNER_TEMP/setup.sh"
+          grep -F "RELEASE_URL=\"https://github.com/choandrew/MacLayoutManager$pinned" "$RUNNER_TEMP/setup.sh" >/dev/null \
+            || { echo "setup.sh RELEASE_URL was not pinned to $GITHUB_REF_NAME" >&2; exit 1; }
+          gh release create "$GITHUB_REF_NAME" app/build/MacLayoutManager.zip "$RUNNER_TEMP/setup.sh" \
+            --generate-notes

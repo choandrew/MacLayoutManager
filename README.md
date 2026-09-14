@@ -25,15 +25,17 @@ held for 2 seconds, 15 seconds pass, or the displays change. Auto-restore launch
 
 ## Install
 
-Requires macOS 15 or newer, Apple silicon, and the Xcode command line tools.
+Requires macOS 15 or newer and Apple silicon.
 
 ```sh
-./setup.sh
+curl -fsSL https://github.com/choandrew/MacLayoutManager/releases/latest/download/setup.sh | bash
 ```
 
-The script creates the `MacLayoutManager Dev` signing identity if it is missing, builds, replaces
-any copy in `/Applications`, and launches the app. Then grant **System Settings → Privacy & Security
-→ Accessibility**. The stable signing identity keeps that grant across rebuilds.
+The script downloads the latest release, creates the `MacLayoutManager Dev` signing identity in the
+login keychain if it is missing, signs the app with it, replaces any copy in `/Applications`, and
+launches the app. It uses only tools that ship with macOS. Then grant **System Settings → Privacy &
+Security → Accessibility**. The stable signing identity keeps that grant across updates; set
+`CODESIGN_IDENTITY` to sign with a different identity.
 
 ## Design
 
@@ -61,13 +63,18 @@ and never writes a file it could not read.
 
 ## Build
 
+Building needs the Xcode command line tools.
+
 ```sh
-cd app
-./make_signing_cert.sh  # once, for a stable local signing identity
-./build.sh
+./setup.sh --build  # build this checkout, then sign and install it
+app/build.sh        # build app/build/MacLayoutManager.app and .zip without installing
 ```
 
 The build runs the Swift model tests and the protocol parser tests, compiles size-optimized arm64
-binaries with link-time optimization, signs the helper and the app, and verifies the signature. It
-signs with `MacLayoutManager Dev` when that identity exists and ad hoc otherwise; set
-`CODESIGN_IDENTITY` to override.
+binaries with link-time optimization into an unsigned bundle, and zips it.
+
+## Release
+
+CI runs `setup.sh --build` with ad-hoc signing on pull requests and pushes to `main`. Pushing a tag
+`v<version>` that matches `CFBundleShortVersionString` in `app/Info.plist` publishes the unsigned
+`MacLayoutManager.zip` and the `setup.sh` that installs it as a GitHub release.
