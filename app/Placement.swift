@@ -121,6 +121,47 @@ func restorePlan<Handle>(
     return moves
 }
 
+/// The apps a restore opened, watched while their windows appear. An app leaves the watch once it
+/// shows as many windows as the layout saved for it, or shows some and gains none for `settleTime`,
+/// since an app that restores no state opens a single window. Every app leaves at `timeout`, since
+/// an app can open no window at all.
+struct OpeningApps {
+    static let settleTime = Duration.seconds(2)
+    static let timeout = Duration.seconds(15)
+
+    private let started: ContinuousClock.Instant
+    private let savedCounts: [String: Int]
+    /// Each watched app's latest window count and when that count last changed.
+    private var watched: [String: (count: Int, since: ContinuousClock.Instant)]
+
+    init(_ bundleIDs: Set<String>, in layout: Layout, at now: ContinuousClock.Instant) {
+        started = now
+        savedCounts = Dictionary(grouping: layout.screens.flatMap(\.windows), by: \.bundleID)
+            .mapValues(\.count)
+        watched = Dictionary(uniqueKeysWithValues: bundleIDs.map { ($0, (0, now)) })
+    }
+
+    var bundleIDs: Set<String> { Set(watched.keys) }
+
+    /// Records the watched apps' windows seen at `now` and drops the apps that are done.
+    mutating func observe<Handle>(_ windows: [LiveWindow<Handle>], at now: ContinuousClock.Instant)
+    {
+        guard now - started < Self.timeout else {
+            watched = [:]
+            return
+        }
+        let counts = Dictionary(grouping: windows, by: \.bundleID).mapValues(\.count)
+        for (bundleID, last) in watched {
+            let count = counts[bundleID, default: 0]
+            let since = count == last.count ? last.since : now
+            let done =
+                count >= savedCounts[bundleID, default: 0]
+                || (count > 0 && now - since >= Self.settleTime)
+            watched[bundleID] = done ? nil : (count, since)
+        }
+    }
+}
+
 extension CGRect {
     var area: CGFloat { width * height }
 

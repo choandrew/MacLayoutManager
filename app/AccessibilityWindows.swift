@@ -71,6 +71,12 @@ enum AccessibilityWindows {
         }
     }
 
+    /// The apps in `bundleIDs` that own no normal-layer window: not running, or running with every
+    /// window closed. Minimized, hidden, and full-screen windows count as owned.
+    static func appsWithoutWindows(among bundleIDs: Set<String>) -> Set<String> {
+        bundleIDs.subtracting(appsWithWindows(where: bundleIDs.contains).map(\.bundleID))
+    }
+
     static func apply(_ moves: [WindowMove<AXWindow>]) {
         for (pid, appMoves) in Dictionary(grouping: moves, by: \.handle.pid) {
             // Apps with enhanced UI on (Chromium and Electron while assistive tech runs) animate frame

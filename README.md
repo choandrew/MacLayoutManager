@@ -17,8 +17,11 @@ or when your displays change.
 - **Launch at Login**, on by default after the first launch, with the opt-out remembered.
 
 Restore matches saved windows to open windows of the same app by exact title first, then
-front-to-back order. It only moves windows already open: it launches no apps and skips minimized and
-full-screen windows.
+front-to-back order, and skips minimized and full-screen windows. It moves the open windows first,
+then opens each app in the layout that has no window, without bringing it forward: it launches an app
+that isn't running and asks a running one to reopen a window. It places an opened app's windows as
+they appear, until the app shows as many windows as the layout saved, gains none for 2 seconds, or
+15 seconds pass. Auto-restore opens apps the same way.
 
 ## Install
 
@@ -45,7 +48,8 @@ layouts file, captures or moves windows through the Accessibility API (one round
 and only for apps with a window on screen), writes the file, prints a tab-separated summary, and
 exits. A `list` run peaks at 1.8 MB. `app/HelperProtocol.h` specifies its arguments and output, and
 the Swift helper imports that header, so both sides share one set of limits and verbs. The host
-serializes helper runs, and the helper holds a lock around each load-change-save cycle.
+serializes helper runs, and the helper holds a lock around each load-change-save cycle, so a command
+chosen while a restore waits for opened apps' windows runs after that restore.
 
 Layouts live in `~/Library/Application Support/MacLayoutManager/layouts.json`. The helper validates
 the file on every run (unique names, at most 64 layouts, one auto-restore layout per display set)
