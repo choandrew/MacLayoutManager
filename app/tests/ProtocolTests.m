@@ -164,6 +164,7 @@ int main(int argc, char **argv) {
   MLMExpect("done with field", "V\t1\nS\t0\nD\t1\n", false);
   MLMExpect("record after done", "V\t1\nS\t0\nD\nE\tlate\n", false);
   MLMExpect("blank line after done", "V\t1\nS\t0\nD\n\n", false);
+  MLMExpect("version only", "V\t1", false);
   MLMExpect("missing done", "V\t1\nS\t0\n", false);
   MLMExpect("done without newline", "V\t1\nS\t0\nD", false);
   MLMExpect("unknown record", "V\t1\nS\t0\nX\t1\nD\n", false);

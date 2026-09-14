@@ -74,7 +74,8 @@ typedef struct {
 ///   E <message>                        at most one; required without S
 ///   D
 ///
-/// No field contains a tab, CR, LF, or NUL.
+/// No field contains a tab, CR, LF, or NUL. Names and messages are non-empty,
+/// names are unique, and every field fits its capacity above with its NUL.
 bool MLMParseHelperOutput(char *text, MLMHelperResult *result);
 
 /// Spawns `argv[0]` with `argv` (NULL-terminated), reads at most

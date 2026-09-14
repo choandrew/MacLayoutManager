@@ -59,11 +59,7 @@ enum HelperMain {
             let name = try LayoutName(name)
             try updated.replaceScreens(of: name, with: capture(on: displays))
         case .restore(let name, let displays):
-            let name = try LayoutName(name)
-            guard let layout = library.layout(named: name) else {
-                throw LibraryError.unknownLayout(name)
-            }
-            try restore(layout, on: displays)
+            try restore(library.layout(named: LayoutName(name)), on: displays)
         case .autoRestore(let displays):
             if let layout = library.autoRestoreLayout(for: displays.ids) {
                 try restore(layout, on: displays)

@@ -23,19 +23,6 @@ _Static_assert(MLMOutputCapacity >
                        2 + MLMMessageCapacity + 2,
                "the largest valid helper output must fit");
 
-typedef enum {
-  /// Nothing read yet: only `V`.
-  MLMStageVersion,
-  /// After `V`: `S`, `E`, or `D`.
-  MLMStageLibrary,
-  /// Inside the `S` block, with `L` records still owed.
-  MLMStageLayouts,
-  /// After the layouts: `E` or `D`.
-  MLMStageMessage,
-  /// After `E`: only `D`.
-  MLMStageDone,
-} MLMStage;
-
 static bool MLMCopy(char *destination, size_t capacity, const char *source) {
   return strlcpy(destination, source, capacity) < capacity;
 }
@@ -61,6 +48,21 @@ static size_t MLMFields(char *line, char **fields, size_t capacity) {
       break;
   }
   return cursor == NULL ? count : capacity + 1;
+}
+
+/// Consumes the next line, which must be a `type` record of exactly `count`
+/// fields.
+static bool MLMRecord(char **lines, const char *type, char **fields,
+                      size_t count) {
+  return *lines != NULL &&
+         MLMFields(strsep(lines, "\n"), fields, count) == count &&
+         strcmp(fields[0], type) == 0;
+}
+
+/// Whether the next line can only be a `type` record, since no record type
+/// shares a first letter.
+static bool MLMNext(const char *lines, char type) {
+  return lines != NULL && lines[0] == type;
 }
 
 static bool MLMCount(const char *text, uint8_t *value) {
@@ -93,67 +95,51 @@ bool MLMParseHelperOutput(char *text, MLMHelperResult *result) {
   // Checked once here, so every string the host builds from a record exists.
   if (!MLMValidUTF8(text))
     return false;
+  // Records are read in the order the header lists them, so the position in
+  // this function is the parser's state.
   MLMHelperResult parsed = {0};
-  MLMStage stage = MLMStageVersion;
-  uint8_t remaining = 0;
   char *lines = text;
-  char *line = NULL;
+  char *fields[MLMMaxFields];
 
-  while ((line = strsep(&lines, "\n")) != NULL) {
-    char *fields[MLMMaxFields];
-    size_t count = MLMFields(line, fields, MLMMaxFields);
-    const char *type = fields[0];
+  if (!MLMRecord(&lines, "V", fields, 2) || strcmp(fields[1], "1") != 0)
+    return false;
 
-    if (strcmp(type, "V") == 0) {
-      if (stage != MLMStageVersion || count != 2 || strcmp(fields[1], "1") != 0)
-        return false;
-      stage = MLMStageLibrary;
-    } else if (strcmp(type, "S") == 0) {
-      if (stage != MLMStageLibrary || count != 2 ||
-          !MLMCount(fields[1], &remaining)) {
-        return false;
-      }
-      parsed.hasLibrary = true;
-      stage = remaining == 0 ? MLMStageMessage : MLMStageLayouts;
-    } else if (strcmp(type, "L") == 0) {
-      if (stage != MLMStageLayouts || count != 4 || fields[1][0] == '\0')
-        return false;
-      MLMLayoutSummary *layout = &parsed.library.layouts[parsed.library.count];
-      if (!MLMCopy(layout->name, sizeof(layout->name), fields[1]) ||
+  if (MLMNext(lines, 'S')) {
+    uint8_t count = 0;
+    if (!MLMRecord(&lines, "S", fields, 2) || !MLMCount(fields[1], &count))
+      return false;
+    parsed.hasLibrary = true;
+    MLMLibrary *library = &parsed.library;
+    for (; library->count < count; library->count++) {
+      MLMLayoutSummary *layout = &library->layouts[library->count];
+      if (!MLMRecord(&lines, "L", fields, 4) || fields[1][0] == '\0' ||
+          !MLMCopy(layout->name, sizeof(layout->name), fields[1]) ||
           !MLMFlag(fields[2], &layout->autoRestore) ||
           !MLMCopy(layout->displays, sizeof(layout->displays), fields[3])) {
         return false;
       }
-      for (uint8_t index = 0; index < parsed.library.count; index++) {
-        if (strcmp(parsed.library.layouts[index].name, layout->name) == 0)
+      for (uint8_t index = 0; index < library->count; index++) {
+        if (strcmp(library->layouts[index].name, layout->name) == 0)
           return false;
       }
-      parsed.library.count++;
-      if (--remaining == 0)
-        stage = MLMStageMessage;
-    } else if (strcmp(type, "E") == 0) {
-      if ((stage != MLMStageLibrary && stage != MLMStageMessage) ||
-          count != 2 || fields[1][0] == '\0' ||
-          !MLMCopy(parsed.message, sizeof(parsed.message), fields[1])) {
-        return false;
-      }
-      stage = MLMStageDone;
-    } else if (strcmp(type, "D") == 0) {
-      // A run that loaded no library has to say why. Only the empty token
-      // after D's own newline may follow it.
-      if ((stage != MLMStageLibrary && stage != MLMStageMessage &&
-           stage != MLMStageDone) ||
-          count != 1 || (!parsed.hasLibrary && parsed.message[0] == '\0') ||
-          lines == NULL || lines[0] != '\0') {
-        return false;
-      }
-      *result = parsed;
-      return true;
-    } else {
-      return false;
     }
   }
-  return false;
+
+  if (MLMNext(lines, 'E')) {
+    if (!MLMRecord(&lines, "E", fields, 2) || fields[1][0] == '\0' ||
+        !MLMCopy(parsed.message, sizeof(parsed.message), fields[1])) {
+      return false;
+    }
+  } else if (!parsed.hasLibrary) {
+    // A run that loaded no library has to say why.
+    return false;
+  }
+
+  // Only the empty token after D's own newline may follow it.
+  if (!MLMRecord(&lines, "D", fields, 1) || lines == NULL || lines[0] != '\0')
+    return false;
+  *result = parsed;
+  return true;
 }
 
 bool MLMRunHelper(const char *_Nullable const *_Nonnull argv,

@@ -38,8 +38,8 @@ struct LayoutLibrary: Equatable {
         self.layouts = layouts
     }
 
-    func layout(named name: LayoutName) -> Layout? {
-        layouts.first { $0.name == name }
+    func layout(named name: LayoutName) throws -> Layout {
+        layouts[try index(of: name)]
     }
 
     func autoRestoreLayout(for displays: Set<DisplayID>) -> Layout? {
@@ -79,12 +79,17 @@ struct LayoutLibrary: Equatable {
         try modify(named: name) { layouts, i in layouts.remove(at: i) }
     }
 
-    private mutating func modify(named name: LayoutName, _ change: (inout [Layout], Int) -> Void)
-        throws
-    {
+    private func index(of name: LayoutName) throws -> Int {
         guard let i = layouts.firstIndex(where: { $0.name == name }) else {
             throw LibraryError.unknownLayout(name)
         }
+        return i
+    }
+
+    private mutating func modify(named name: LayoutName, _ change: (inout [Layout], Int) -> Void)
+        throws
+    {
+        let i = try index(of: name)
         try modify { change(&$0, i) }
     }
 
@@ -143,9 +148,8 @@ enum LayoutFile {
         return try JSONDecoder().decode(LayoutLibrary.self, from: data)
     }
 
+    /// The directory must exist; the helper creates it when it takes the lock.
     static func save(_ library: LayoutLibrary, to url: URL) throws {
-        try FileManager.default.createDirectory(
-            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(library).write(to: url, options: .atomic)

@@ -185,7 +185,7 @@ struct LayoutCoreTests {
             library.layouts.map(\.autoRestore) == [true, false],
             "replaced layout takes over auto-restore")
         expect(
-            library.layout(named: desk)?.displaySet == [Self.laptop.id, Self.monitor.id],
+            try library.layout(named: desk).displaySet == [Self.laptop.id, Self.monitor.id],
             "screens replaced")
     }
 
@@ -219,6 +219,7 @@ struct LayoutCoreTests {
             "127 bytes fit")
         let desk = try LayoutName(" Desk ")
         expect(desk.rawValue == "Desk", "names are trimmed")
+        expect(try LayoutName("Work 👩‍💻").rawValue == "Work 👩‍💻", "emoji joiners are allowed")
 
         let couch = try LayoutName("Couch")
         var library = LayoutLibrary()
@@ -237,6 +238,8 @@ struct LayoutCoreTests {
 
     mutating func fileRoundTripsAndLoadRejectsConflicts() throws {
         let url = FileManager.default.temporaryDirectory.appending(path: "\(UUID())/layouts.json")
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         expect(
             try LayoutFile.load(from: url) == LayoutLibrary(), "missing file is an empty library")
 
@@ -310,7 +313,8 @@ struct LayoutCoreTests {
             "an unloaded library reports only its reason")
 
         expect(
-            Outcome.field("a\tb\nc", capacity: 11) == "a b c", "control characters become spaces")
+            Outcome.field("a\tb\nc 👩‍💻", capacity: 32) == "a b c 👩‍💻",
+            "control characters become spaces")
         expect(
             Outcome.field("ééé", capacity: 6) == "éé",
             "truncation keeps whole characters and the NUL")

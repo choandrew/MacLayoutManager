@@ -150,8 +150,7 @@ static void MLMDisplayReconfigured(CGDirectDisplayID display,
   CGDisplayRegisterReconfigurationCallback(MLMDisplayReconfigured,
                                            (__bridge void *)self);
   [self runHelper:@[ @MLMVerbList ] kind:MLMRunKindLaunch];
-  if (!AXIsProcessTrusted())
-    [self requestAccessibility:nil];
+  [self ensureAccessibility];
 
   // First launch only, and not retried if registration fails.
   NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
@@ -211,23 +210,21 @@ static void MLMDisplayReconfigured(CGDirectDisplayID display,
       _helperQueue,
       dispatch_block_create_with_qos_class(
           DISPATCH_BLOCK_ENFORCE_QOS_CLASS, qos, 0, ^{
+            // About 25 KB on this worker's stack; the main-queue block below
+            // takes its own copy.
+            MLMHelperResult result = {0};
+            bool succeeded = false;
             @autoreleasepool {
-              // Heap: the result is about 25 KB and outlives this block.
-              MLMHelperResult *result = calloc(1, sizeof(*result));
-              const char **argv = calloc(arguments.count + 2, sizeof(*argv));
-              bool succeeded = false;
-              if (result != NULL && argv != NULL) {
-                argv[0] = helper.fileSystemRepresentation;
-                for (NSUInteger index = 0; index < arguments.count; index++)
-                  argv[index + 1] = arguments[index].UTF8String;
-                succeeded = MLMRunHelper(argv, result);
-              }
-              free(argv);
-              dispatch_async(dispatch_get_main_queue(), ^{
-                [self merge:succeeded ? result : NULL kind:kind];
-                free(result);
-              });
+              const char *argv[arguments.count + 2];
+              argv[0] = helper.fileSystemRepresentation;
+              for (NSUInteger index = 0; index < arguments.count; index++)
+                argv[index + 1] = arguments[index].UTF8String;
+              argv[arguments.count + 1] = NULL;
+              succeeded = MLMRunHelper(argv, &result);
             }
+            dispatch_async(dispatch_get_main_queue(), ^{
+              [self merge:succeeded ? &result : NULL kind:kind];
+            });
           }));
 }
 
@@ -406,12 +403,9 @@ static void MLMDisplayReconfigured(CGDirectDisplayID display,
 }
 
 - (void)toggleAutoRestore:(NSMenuItem *)sender {
-  NSString *name = sender.representedObject;
-  const MLMLayoutSummary *layout = [self layoutNamed:name];
-  if (layout == NULL)
-    return;
+  bool enabled = sender.state == NSControlStateValueOn;
   [self runHelper:@[
-    @MLMVerbSetAutoRestore, name, layout->autoRestore ? @"0" : @"1"
+    @MLMVerbSetAutoRestore, sender.representedObject, enabled ? @"0" : @"1"
   ]
              kind:MLMRunKindUser];
 }
@@ -466,9 +460,9 @@ static void MLMDisplayReconfigured(CGDirectDisplayID display,
     NSError *error = nil;
     bool succeeded = enabled ? [loginItem registerAndReturnError:&error]
                              : [loginItem unregisterAndReturnError:&error];
-    bool needsApproval = loginItem.status == SMAppServiceStatusRequiresApproval;
     if (!userInitiated)
       return;
+    bool needsApproval = loginItem.status == SMAppServiceStatusRequiresApproval;
     dispatch_async(dispatch_get_main_queue(), ^{
       if (needsApproval) {
         [loginItem.class openSystemSettingsLoginItems];

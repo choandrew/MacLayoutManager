@@ -74,8 +74,9 @@ enum Outcome {
     /// The complete output HelperProtocol.h specifies.
     var output: String {
         var output = Self.record("V", "1")
+        let failure: (any Error)?
         switch self {
-        case .loaded(let library, let failure):
+        case .loaded(let library, let libraryFailure):
             output += Self.record("S", String(library.layouts.count))
             for layout in library.layouts {
                 output += Self.record(
@@ -84,13 +85,13 @@ enum Outcome {
                         layout.screens.map(\.displayName).joined(separator: " + "),
                         capacity: MLMDisplaysCapacity))
             }
-            if let failure {
-                output += Self.record(
-                    "E", Self.field(failure.localizedDescription, capacity: MLMMessageCapacity))
-            }
+            failure = libraryFailure
         case .unloaded(let error):
+            failure = error
+        }
+        if let failure {
             output += Self.record(
-                "E", Self.field(error.localizedDescription, capacity: MLMMessageCapacity))
+                "E", Self.field(failure.localizedDescription, capacity: MLMMessageCapacity))
         }
         return output + Self.record("D")
     }
@@ -106,8 +107,7 @@ enum Outcome {
         var used = 0
         for character in text {
             let piece =
-                character.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
-                ? " " : String(character)
+                character.unicodeScalars.contains(where: \.isControl) ? " " : String(character)
             used += piece.utf8.count
             guard used < capacity else { break }
             result += piece

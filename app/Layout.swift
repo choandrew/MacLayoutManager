@@ -1,7 +1,8 @@
 import CoreGraphics
 import Foundation
 
-/// A display's CoreGraphics UUID, stable across reboots and reconnections.
+/// A display's CoreGraphics UUID, stable across reboots and reconnections. Identical monitors can
+/// share one, so `DisplayArrangement` suffixes repeats with `#n` by screen position.
 struct DisplayID: RawRepresentable, Hashable, Codable {
     let rawValue: String
 }
@@ -16,7 +17,7 @@ struct LayoutName: Hashable, Codable, CustomStringConvertible {
     init(_ input: String) throws {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, trimmed.utf8.count <= Self.maxBytes,
-            trimmed.rangeOfCharacter(from: .controlCharacters) == nil
+            !trimmed.unicodeScalars.contains(where: \.isControl)
         else { throw LibraryError.invalidName }
         rawValue = trimmed
     }
@@ -30,6 +31,12 @@ struct LayoutName: Hashable, Codable, CustomStringConvertible {
     }
 
     var description: String { rawValue }
+}
+
+extension Unicode.Scalar {
+    /// A C0 or C1 control such as tab, line feed, or NUL. `CharacterSet.controlCharacters` also
+    /// holds format characters like the zero-width joiner inside emoji such as 👩‍💻.
+    var isControl: Bool { properties.generalCategory == .control }
 }
 
 /// A saved window position, matched back to a live window by app and title.
