@@ -1,15 +1,14 @@
 #!/bin/bash
-# Installs MacLayoutManager: downloads the latest release build, signs it with a stable local identity,
-# replaces the copy in /Applications, and launches it. Only --build, which builds this checkout
-# instead, needs the Xcode command line tools. Re-running updates the install; layouts live in
-# ~/Library/Application Support/MacLayoutManager, outside the bundle.
+# Installs MacLayoutManager: downloads the latest release build, signs it with a stable local
+# identity, replaces the copy in /Applications, and launches it. Only --build, which builds this
+# checkout instead, needs the Xcode command line tools. Re-running updates the install; layouts live
+# in ~/Library/Application Support/MacLayoutManager, outside the bundle.
 #
-#   curl -fsSL https://raw.githubusercontent.com/choandrew/MacLayoutManager/main/setup.sh | bash
+#   curl -fsSL https://github.com/choandrew/MacLayoutManager/releases/latest/download/setup.sh | bash
 #   ./setup.sh --build
 set -euo pipefail
 
 APP_NAME="MacLayoutManager"
-BUNDLE_ID="com.choandrew.MacLayoutManager"
 RELEASE_URL="https://github.com/choandrew/MacLayoutManager/releases/latest/download/$APP_NAME.zip"
 INSTALLED_APP="/Applications/$APP_NAME.app"
 LOCAL_IDENTITY="MacLayoutManager Dev"
@@ -22,10 +21,6 @@ trap 'rm -rf "$WORK"' EXIT
 # keeps one requirement across builds. It is local only: it can't be notarized or distributed.
 #
 # Undo: security delete-certificate -c "MacLayoutManager Dev" ~/Library/Keychains/login.keychain-db
-has_local_identity() {
-    security find-identity -v -p codesigning "$KEYCHAIN" 2>/dev/null | grep -q "\"$LOCAL_IDENTITY\""
-}
-
 create_local_identity() {
     # The system LibreSSL has no `req -addext`, so the extensions live in a config file.
     cat > "$WORK/cert.cnf" <<CNF
@@ -45,15 +40,14 @@ subjectKeyIdentifier = hash
 CNF
 
     # Homebrew's OpenSSL 3 writes PKCS#12 algorithms Security.framework rejects, so pin LibreSSL.
-    local openssl=/usr/bin/openssl
-    "$openssl" req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes \
+    /usr/bin/openssl req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes \
         -keyout "$WORK/key.pem" -out "$WORK/cert.pem" -config "$WORK/cert.cnf" 2>/dev/null
 
     # `security import` is unreliable with an empty PKCS#12 password, so use a throwaway one.
     local p12_password
     p12_password="$(uuidgen)"
-    "$openssl" pkcs12 -export -out "$WORK/identity.p12" -inkey "$WORK/key.pem" -in "$WORK/cert.pem" \
-        -name "$LOCAL_IDENTITY" -passout "pass:$p12_password"
+    /usr/bin/openssl pkcs12 -export -out "$WORK/identity.p12" -inkey "$WORK/key.pem" \
+        -in "$WORK/cert.pem" -name "$LOCAL_IDENTITY" -passout "pass:$p12_password"
     security import "$WORK/identity.p12" -k "$KEYCHAIN" -P "$p12_password" \
         -T /usr/bin/codesign -T /usr/bin/security
 
@@ -65,10 +59,6 @@ CNF
     # Trust for code signing in the user domain only.
     security add-trusted-cert -r trustRoot -p codeSign -k "$KEYCHAIN" "$WORK/cert.pem" \
         || echo "  add-trusted-cert skipped; signing usually still works untrusted"
-
-    has_local_identity \
-        || { echo "Identity not visible to codesign; inspect with: security find-identity -v -p codesigning" >&2
-             exit 1; }
 }
 
 case "$*" in
@@ -90,9 +80,11 @@ esac
 
 if [ -z "${CODESIGN_IDENTITY:-}" ]; then
     CODESIGN_IDENTITY="$LOCAL_IDENTITY"
-    has_local_identity || create_local_identity
+    security find-identity -v -p codesigning "$KEYCHAIN" 2>/dev/null | grep -q "\"$LOCAL_IDENTITY\"" \
+        || create_local_identity
 fi
 
+BUNDLE_ID="$(plutil -extract CFBundleIdentifier raw "$APP/Contents/Info.plist")"
 xattr -cr "$APP"
 codesign --force --options runtime --identifier "$BUNDLE_ID.helper" \
     --sign "$CODESIGN_IDENTITY" "$APP/Contents/Helpers/MacLayoutHelper"

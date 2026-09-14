@@ -28,7 +28,7 @@ held for 2 seconds, 15 seconds pass, or the displays change. Auto-restore launch
 Requires macOS 15 or newer and Apple silicon.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/choandrew/MacLayoutManager/main/setup.sh | bash
+curl -fsSL https://github.com/choandrew/MacLayoutManager/releases/latest/download/setup.sh | bash
 ```
 
 The script downloads the latest release, creates the `MacLayoutManager Dev` signing identity in the
@@ -75,6 +75,6 @@ binaries with link-time optimization into an unsigned bundle.
 
 ## Release
 
-CI builds every push and pull request on `macos-26`. Pushing a tag `v<version>` that matches
-`CFBundleShortVersionString` in `app/Info.plist` publishes `MacLayoutManager.zip` as a GitHub
-release, which `setup.sh` installs.
+CI runs `setup.sh --build` with ad-hoc signing on `macos-26` for every push and pull request.
+Pushing a tag `v<version>` that matches `CFBundleShortVersionString` in `app/Info.plist` publishes
+`MacLayoutManager.zip` and the `setup.sh` that installs it as a GitHub release.
