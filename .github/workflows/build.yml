@@ -14,20 +14,22 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Check tag matches Info.plist version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version="v$(plutil -extract CFBundleShortVersionString raw app/Info.plist)"
+          [ "$GITHUB_REF_NAME" = "$version" ] \
+            || { echo "Tag $GITHUB_REF_NAME does not match Info.plist version $version" >&2; exit 1; }
+
       # Ad-hoc signing covers setup.sh's signing and install steps without a keychain identity.
       - run: ./setup.sh --build
         env:
           CODESIGN_IDENTITY: "-"
 
-      # setup.sh ships with the zip so the installer always matches the bundle layout it signs.
+      # Publishes the unsigned zip setup.sh just installed. setup.sh ships with it so the installer
+      # always matches the bundle layout it signs.
       - name: Publish release
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          version="v$(plutil -extract CFBundleShortVersionString raw app/Info.plist)"
-          [ "$GITHUB_REF_NAME" = "$version" ] \
-            || { echo "Tag $GITHUB_REF_NAME does not match Info.plist version $version" >&2; exit 1; }
-          ditto -c -k --keepParent app/build/MacLayoutManager.app MacLayoutManager.zip
-          gh release create "$GITHUB_REF_NAME" MacLayoutManager.zip setup.sh \
-            --verify-tag --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" app/build/MacLayoutManager.zip setup.sh --generate-notes

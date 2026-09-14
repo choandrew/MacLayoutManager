@@ -1,11 +1,13 @@
 #!/bin/bash
 # Builds app/build/MacLayoutManager.app: a size-optimized Objective-C host that stays running and a
 # Swift helper it spawns per command. Runs both test suites first. The bundle stays unsigned: setup.sh
-# signs it at install with the identity that holds the Accessibility grant.
+# signs it at install with the identity that holds the Accessibility grant. app/build/MacLayoutManager.zip
+# holds the bundle as a release publishes it.
 set -euo pipefail
 
 APP_NAME="MacLayoutManager"
 APP_PATH="build/$APP_NAME.app"
+ZIP_PATH="build/$APP_NAME.zip"
 EXECUTABLE="$APP_PATH/Contents/MacOS/$APP_NAME"
 HELPER="$APP_PATH/Contents/Helpers/MacLayoutHelper"
 PROTOCOL_FIXTURE="tests/protocol-output.txt"
@@ -54,5 +56,6 @@ xcrun swiftc "${SWIFT_FLAGS[@]}" \
 
 cp Info.plist "$APP_PATH/Contents/Info.plist"
 printf 'APPL????' > "$APP_PATH/Contents/PkgInfo"
+ditto -c -k --keepParent "$APP_PATH" "$ZIP_PATH"
 
-echo "Built $APP_PATH for Apple silicon"
+echo "Built $APP_PATH and $ZIP_PATH for Apple silicon"

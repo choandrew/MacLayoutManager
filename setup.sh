@@ -61,22 +61,24 @@ CNF
         || echo "  add-trusted-cert skipped; signing usually still works untrusted"
 }
 
+# Both paths install from the release zip, so CI's --build run covers the unzip a download goes through.
 case "$*" in
     "")
-        curl -fsSL -o "$WORK/$APP_NAME.zip" "$RELEASE_URL"
-        ditto -x -k "$WORK/$APP_NAME.zip" "$WORK"
-        APP="$WORK/$APP_NAME.app"
+        ZIP="$WORK/$APP_NAME.zip"
+        curl -fsSL -o "$ZIP" "$RELEASE_URL"
         ;;
     --build)
         cd "$(dirname "$0")"
         app/build.sh
-        APP="app/build/$APP_NAME.app"
+        ZIP="app/build/$APP_NAME.zip"
         ;;
     *)
         echo "usage: setup.sh [--build]" >&2
         exit 2
         ;;
 esac
+ditto -x -k "$ZIP" "$WORK"
+APP="$WORK/$APP_NAME.app"
 
 if [ -z "${CODESIGN_IDENTITY:-}" ]; then
     CODESIGN_IDENTITY="$LOCAL_IDENTITY"

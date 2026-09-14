@@ -67,14 +67,14 @@ Building needs the Xcode command line tools.
 
 ```sh
 ./setup.sh --build  # build this checkout, then sign and install it
-app/build.sh        # build app/build/MacLayoutManager.app without installing
+app/build.sh        # build app/build/MacLayoutManager.app and .zip without installing
 ```
 
-The build runs the Swift model tests and the protocol parser tests and compiles size-optimized arm64
-binaries with link-time optimization into an unsigned bundle.
+The build runs the Swift model tests and the protocol parser tests, compiles size-optimized arm64
+binaries with link-time optimization into an unsigned bundle, and zips it.
 
 ## Release
 
-CI runs `setup.sh --build` with ad-hoc signing on `macos-26` for every push and pull request.
-Pushing a tag `v<version>` that matches `CFBundleShortVersionString` in `app/Info.plist` publishes
+CI runs `setup.sh --build` with ad-hoc signing on pull requests and pushes to `main`. Pushing a tag
+`v<version>` that matches `CFBundleShortVersionString` in `app/Info.plist` publishes the unsigned
 `MacLayoutManager.zip` and the `setup.sh` that installs it as a GitHub release.
