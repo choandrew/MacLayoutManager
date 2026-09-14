@@ -1,28 +1,35 @@
 import Foundation
 
-public enum LibraryError: LocalizedError, Equatable {
-    case blankName
+enum LibraryError: LocalizedError, Equatable {
+    case invalidName
+    case tooManyLayouts
     case duplicateName(LayoutName)
     case duplicateDisplay(LayoutName)
     case conflictingAutoRestore(LayoutName, LayoutName)
     case unknownLayout(LayoutName)
 
-    public var errorDescription: String? {
+    var errorDescription: String? {
         switch self {
-        case .blankName: "Layout names can't be blank."
+        case .invalidName:
+            "Layout names can't be blank, longer than \(LayoutName.maxBytes) bytes, or contain tabs or line breaks."
+        case .tooManyLayouts: "MacLayoutManager keeps at most \(LayoutLibrary.maxLayouts) layouts."
         case .duplicateName(let name): "A layout named “\(name)” already exists."
         case .duplicateDisplay(let name): "Layout “\(name)” lists the same display twice."
-        case .conflictingAutoRestore(let first, let second): "Layouts “\(first)” and “\(second)” both auto-restore for the same displays."
+        case .conflictingAutoRestore(let first, let second):
+            "Layouts “\(first)” and “\(second)” both auto-restore for the same displays."
         case .unknownLayout(let name): "No layout is named “\(name)”."
         }
     }
 }
 
-/// The saved layouts. Every mutation revalidates, so names are always unique and each display set has at most one auto-restore layout.
-public struct LayoutLibrary: Equatable, Sendable {
-    public private(set) var layouts: [Layout]
+/// The saved layouts. Every mutation revalidates, so names are always unique, the count fits the
+/// host's records, and each display set has at most one auto-restore layout.
+struct LayoutLibrary: Equatable {
+    static let maxLayouts = MLMMaxLayouts
 
-    public init() {
+    private(set) var layouts: [Layout]
+
+    init() {
         layouts = []
     }
 
@@ -31,20 +38,20 @@ public struct LayoutLibrary: Equatable, Sendable {
         self.layouts = layouts
     }
 
-    public func layout(named name: LayoutName) -> Layout? {
+    func layout(named name: LayoutName) -> Layout? {
         layouts.first { $0.name == name }
     }
 
-    public func autoRestoreLayout(for displays: Set<DisplayID>) -> Layout? {
+    func autoRestoreLayout(for displays: Set<DisplayID>) -> Layout? {
         layouts.first { $0.autoRestore && $0.displaySet == displays }
     }
 
-    public mutating func add(_ name: LayoutName, screens: [ScreenLayout]) throws {
+    mutating func add(_ name: LayoutName, screens: [ScreenLayout]) throws {
         try modify { $0.append(Layout(name: name, screens: screens, autoRestore: false)) }
     }
 
     /// Keeps the layout's auto-restore, taking it over from any other layout saved with the new displays.
-    public mutating func replaceScreens(of name: LayoutName, with screens: [ScreenLayout]) throws {
+    mutating func replaceScreens(of name: LayoutName, with screens: [ScreenLayout]) throws {
         try modify(named: name) { layouts, i in
             layouts[i].screens = screens
             if layouts[i].autoRestore {
@@ -53,12 +60,12 @@ public struct LayoutLibrary: Equatable, Sendable {
         }
     }
 
-    public mutating func rename(_ name: LayoutName, to newName: LayoutName) throws {
+    mutating func rename(_ name: LayoutName, to newName: LayoutName) throws {
         try modify(named: name) { layouts, i in layouts[i].name = newName }
     }
 
     /// Enabling auto-restore disables it on any other layout saved with the same displays.
-    public mutating func setAutoRestore(_ name: LayoutName, _ enabled: Bool) throws {
+    mutating func setAutoRestore(_ name: LayoutName, _ enabled: Bool) throws {
         try modify(named: name) { layouts, i in
             if enabled {
                 Self.claimAutoRestore(at: i, in: &layouts)
@@ -68,12 +75,16 @@ public struct LayoutLibrary: Equatable, Sendable {
         }
     }
 
-    public mutating func delete(_ name: LayoutName) throws {
+    mutating func delete(_ name: LayoutName) throws {
         try modify(named: name) { layouts, i in layouts.remove(at: i) }
     }
 
-    private mutating func modify(named name: LayoutName, _ change: (inout [Layout], Int) -> Void) throws {
-        guard let i = layouts.firstIndex(where: { $0.name == name }) else { throw LibraryError.unknownLayout(name) }
+    private mutating func modify(named name: LayoutName, _ change: (inout [Layout], Int) -> Void)
+        throws
+    {
+        guard let i = layouts.firstIndex(where: { $0.name == name }) else {
+            throw LibraryError.unknownLayout(name)
+        }
         try modify { change(&$0, i) }
     }
 
@@ -92,12 +103,19 @@ public struct LayoutLibrary: Equatable, Sendable {
     }
 
     private static func validate(_ layouts: [Layout]) throws {
+        guard layouts.count <= maxLayouts else { throw LibraryError.tooManyLayouts }
         var names = Set<LayoutName>()
         var autoRestoreOwners: [Set<DisplayID>: LayoutName] = [:]
         for layout in layouts {
-            guard names.insert(layout.name).inserted else { throw LibraryError.duplicateName(layout.name) }
-            guard layout.displaySet.count == layout.screens.count else { throw LibraryError.duplicateDisplay(layout.name) }
-            if layout.autoRestore, let other = autoRestoreOwners.updateValue(layout.name, forKey: layout.displaySet) {
+            guard names.insert(layout.name).inserted else {
+                throw LibraryError.duplicateName(layout.name)
+            }
+            guard layout.displaySet.count == layout.screens.count else {
+                throw LibraryError.duplicateDisplay(layout.name)
+            }
+            if layout.autoRestore,
+                let other = autoRestoreOwners.updateValue(layout.name, forKey: layout.displaySet)
+            {
                 throw LibraryError.conflictingAutoRestore(other, layout.name)
             }
         }
@@ -105,17 +123,17 @@ public struct LayoutLibrary: Equatable, Sendable {
 }
 
 extension LayoutLibrary: Codable {
-    public init(from decoder: any Decoder) throws {
+    init(from decoder: any Decoder) throws {
         try self.init(layouts: [Layout](from: decoder))
     }
 
-    public func encode(to encoder: any Encoder) throws {
+    func encode(to encoder: any Encoder) throws {
         try layouts.encode(to: encoder)
     }
 }
 
-public enum LayoutFile {
-    public static func load(from url: URL) throws -> LayoutLibrary {
+enum LayoutFile {
+    static func load(from url: URL) throws -> LayoutLibrary {
         let data: Data
         do {
             data = try Data(contentsOf: url)
@@ -125,8 +143,9 @@ public enum LayoutFile {
         return try JSONDecoder().decode(LayoutLibrary.self, from: data)
     }
 
-    public static func save(_ library: LayoutLibrary, to url: URL) throws {
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+    static func save(_ library: LayoutLibrary, to url: URL) throws {
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(library).write(to: url, options: .atomic)
