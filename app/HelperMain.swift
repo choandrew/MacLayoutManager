@@ -97,17 +97,23 @@ enum HelperMain {
         }
     }
 
-    /// Moves the layout's open windows first, then opens its apps that own no standard window and
-    /// places their windows as they appear, until they settle or the displays change. A display
-    /// change makes `displays` stale and starts the host's own auto-restore.
+    /// Moves the layout's open windows first, then launches its apps that aren't running and places
+    /// their windows as they appear, until they settle or the displays change. A display change makes
+    /// `displays` stale and starts the host's own auto-restore.
+    ///
+    /// A running app is never asked to reopen a window: Accessibility lists only the current Space's
+    /// windows, so an app whose windows sit on another Space or in full screen looks windowless and
+    /// would open a stray one.
     private static func restore(_ layout: Layout, on displays: DisplayArrangement) throws {
-        let bundleIDs = Set(layout.screens.flatMap { $0.windows.map(\.bundleID) })
-        let windowCounts = try place(layout, appsIn: bundleIDs, on: displays)
-        let windowless = bundleIDs.filter { windowCounts[$0, default: 0] == 0 }
-
-        let unopened = openApps(windowless)
-        var opening = OpeningApps(windowless.subtracting(unopened), at: .now)
         let activeDisplays = ActiveDisplay.all()
+        let bundleIDs = Set(layout.screens.flatMap { $0.windows.map(\.bundleID) })
+        // Every app owning a normal-layer window is running and gets a count.
+        let windowless = bundleIDs.subtracting(
+            try place(layout, appsIn: bundleIDs, on: displays).keys)
+        let notRunning = windowless.subtracting(AccessibilityWindows.runningApps(among: windowless))
+
+        let unopened = openApps(notRunning)
+        var opening = OpeningApps(notRunning.subtracting(unopened), at: .now)
         while !opening.bundleIDs.isEmpty {
             Thread.sleep(forTimeInterval: OpeningApps.pollInterval / .seconds(1))
             guard ActiveDisplay.all() == activeDisplays else { break }
@@ -119,13 +125,12 @@ enum HelperMain {
     }
 
     /// Moves the windows of the layout's apps in `bundleIDs` into place, each app on its own worker,
-    /// and returns each app's standard window count.
+    /// and returns the standard window count of each app that owns a normal-layer window.
     private static func place(
         _ layout: Layout, appsIn bundleIDs: Set<String>, on displays: DisplayArrangement
     ) throws -> [String: Int] {
         let counts = try AccessibilityWindows.forEachApp(where: bundleIDs.contains) { app in
-            AccessibilityWindows.apply(
-                restorePlan(for: layout, windows: app.movable, displays: displays))
+            app.apply(restorePlan(for: layout, windows: app.movable, displays: displays))
             return (app.bundleID, app.windowCount)
         }
         return Dictionary(uniqueKeysWithValues: counts)
@@ -146,9 +151,8 @@ enum HelperMain {
         }
     }
 
-    /// Opens each app without bringing it forward: `open` launches an app that isn't running and
-    /// asks a running one to reopen a window. Returns the apps it couldn't open, such as uninstalled
-    /// ones.
+    /// Launches each app without bringing it forward. Returns the apps `open` couldn't launch, such as
+    /// uninstalled ones.
     private static func openApps(_ bundleIDs: Set<String>) -> Set<String> {
         let launches = bundleIDs.map { bundleID -> (String, Process?) in
             let process = Process()

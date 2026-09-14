@@ -18,11 +18,10 @@ or when your displays change.
 
 Restore matches saved windows to open windows of the same app by exact title first, then
 front-to-back order, and skips minimized and full-screen windows. It moves the open windows first,
-then opens each app in the layout that has no window, minimized and full-screen ones included,
-without bringing it forward: it launches an app that isn't running and asks a running one to reopen
-a window. It places an opened app's windows as they appear, until the app has shown a window and its
-window count has held for 2 seconds, 15 seconds pass, or the displays change. Auto-restore opens apps
-the same way.
+then launches each app in the layout that isn't running, without bringing it forward. A running app
+is left alone even with no window open, since its windows may be on another Space. Restore places a
+launched app's windows as they appear, until the app has shown a window and its window count has
+held for 2 seconds, 15 seconds pass, or the displays change. Auto-restore launches apps the same way.
 
 ## Install
 
@@ -48,9 +47,10 @@ app using an SF Symbol icon (13.0-13.6 MB).
 Every command runs in `Contents/Helpers/MacLayoutHelper`, a 200 KB Swift executable that loads the
 layouts file, captures or moves windows through the Accessibility API, writes the file, prints a
 tab-separated summary, and exits. A `list` run peaks at 1.8 MB. Each app answers Accessibility calls
-one at a time on its main thread, so the helper gives every app its own worker and runs the apps in
-parallel: a capture or restore lasts as long as its slowest app rather than all apps together, and an
-app that leaves a call unanswered for a second gets no further calls in that pass. `app/HelperProtocol.h` specifies its arguments and output, and
+one at a time on its main thread, so the helper gives every app its own worker and runs up to one
+worker per CPU core: while the apps fit the cores, a capture or restore lasts about as long as its
+slowest app rather than all apps together. An app that leaves a call unanswered for its full
+1-second timeout gets no further calls in that pass. `app/HelperProtocol.h` specifies its arguments and output, and
 the Swift helper imports that header, so both sides share one set of limits and verbs. The host
 serializes helper runs, and the helper holds a lock around each load-change-save cycle, so a command
 chosen while a restore waits for opened apps' windows runs after that restore.

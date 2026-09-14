@@ -122,6 +122,8 @@ static NSArray<NSString *> *MLMDisplayArguments(void) {
   NSStatusItem *_statusItem;
   MLMLibrary _library;
   dispatch_queue_t _helperQueue;
+  /// Serial, so status reads and changes land on the checkmark in order.
+  dispatch_queue_t _loginItemQueue;
   dispatch_source_t _settleTimer;
   uint32_t _menuOpenings;
   /// The Launch at Login checkmark as ServiceManagement last reported it.
@@ -151,6 +153,10 @@ static void MLMDisplayReconfigured(CGDirectDisplayID display,
       dispatch_queue_create("com.choandrew.MacLayoutManager.helper",
                             dispatch_queue_attr_make_with_qos_class(
                                 DISPATCH_QUEUE_SERIAL, QOS_CLASS_UTILITY, 0));
+  _loginItemQueue = dispatch_queue_create(
+      "com.choandrew.MacLayoutManager.login-item",
+      dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL,
+                                              QOS_CLASS_USER_INITIATED, 0));
 
   _statusItem = [NSStatusBar.systemStatusBar
       statusItemWithLength:NSSquareStatusItemLength];
@@ -453,7 +459,7 @@ static void MLMDisplayReconfigured(CGDirectDisplayID display,
 /// removal is a synchronous XPC round trip, so all of them run off the main
 /// thread.
 - (void)refreshLoginItem:(NSMenuItem *)item {
-  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+  dispatch_async(_loginItemQueue, ^{
     NSControlStateValue state = MLMLoginItemState(MLMLoginItem().status);
     dispatch_async(dispatch_get_main_queue(), ^{
       self->_loginItemState = state;
@@ -465,9 +471,7 @@ static void MLMDisplayReconfigured(CGDirectDisplayID display,
 /// A toggle that needs approval opens Login Items settings, and one that fails
 /// beeps.
 - (void)setLoginItem:(bool)enabled userInitiated:(bool)userInitiated {
-  qos_class_t qos =
-      userInitiated ? QOS_CLASS_USER_INITIATED : QOS_CLASS_UTILITY;
-  dispatch_async(dispatch_get_global_queue(qos, 0), ^{
+  dispatch_async(_loginItemQueue, ^{
     SMAppService *loginItem = MLMLoginItem();
     NSError *error = nil;
     bool succeeded = enabled ? [loginItem registerAndReturnError:&error]

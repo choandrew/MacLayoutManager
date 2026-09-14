@@ -47,6 +47,9 @@ enum AccessibilityError: LocalizedError {
 
 /// Reads and moves windows without AppKit, so the helper pays for CoreGraphics and HIServices only.
 enum AccessibilityWindows {
+    /// Caps each call into another app, for the whole process.
+    private static let messagingTimeout = Duration.seconds(1)
+
     /// One app's standard windows, read by the worker that handles that app.
     struct App {
         let bundleID: String
@@ -54,20 +57,50 @@ enum AccessibilityWindows {
         let movable: [LiveWindow<AXWindow>]
         /// Standard windows, minimized and full-screen ones included.
         let windowCount: Int
+        /// Whether a call ran into the messaging timeout. A hung app gets no further calls this pass,
+        /// so it stalls a run by about one timeout rather than one per call.
+        let hung: Bool
+
+        /// Moves this app's windows; call it from the worker that read them.
+        func apply(_ moves: [WindowMove<AXWindow>]) {
+            guard !hung else { return }
+            for (pid, appMoves) in Dictionary(grouping: moves, by: \.window.handle.pid) {
+                // Apps with enhanced UI on (Chromium and Electron while assistive tech runs) animate
+                // frame changes and drop the later ones.
+                let app = AXUIElementCreateApplication(pid)
+                let enhancedUI = "AXEnhancedUserInterface" as CFString
+                var value: CFTypeRef?
+                let read = call { AXUIElementCopyAttributeValue(app, enhancedUI, &value) }
+                guard !read.hung else { return }
+                let hadEnhancedUI = read.status == .success && value as? Bool == true
+                if hadEnhancedUI {
+                    AXUIElementSetAttributeValue(app, enhancedUI, false as CFBoolean)
+                }
+                var appHung = false
+                for move in appMoves where !appHung {
+                    appHung = setFrame(
+                        of: move.window.handle.element, from: move.window.frame, to: move.frame)
+                }
+                if hadEnhancedUI {
+                    AXUIElementSetAttributeValue(app, enhancedUI, true as CFBoolean)
+                }
+                guard !appHung else { return }
+            }
+        }
     }
 
-    /// Reads the windows of each app whose bundle ID passes `include` and runs `body` on them, with
-    /// one worker per app and apps in parallel, and returns the outputs in window list order. An app
-    /// answers Accessibility calls one at a time on its main thread, so a run lasts as long as its
-    /// slowest app rather than all apps together. `AXUIElement` is not `Sendable`, so each element
-    /// stays on the worker that read it and only `body`'s output crosses threads.
+    /// Reads the windows of each app whose bundle ID passes `include` and runs `body` on them, each
+    /// app on its own worker, up to one worker per CPU core, and returns the outputs in window list
+    /// order. An app answers Accessibility calls one at a time on its main thread, so while the apps
+    /// fit the cores a run lasts about as long as its slowest app rather than all apps together.
+    /// `AXUIElement` is not `Sendable`, so each element stays on the worker that read it and only
+    /// `body`'s output crosses threads.
     static func forEachApp<Output: Sendable>(
         where include: (_ bundleID: String) -> Bool,
         _ body: @Sendable (App) -> Output
     ) throws -> [Output] {
-        // Caps each call into another app, for the whole process; an app that times out gets no
-        // further calls this pass, so an unresponsive app stalls a run by about a second.
-        AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 1)
+        AXUIElementSetMessagingTimeout(
+            AXUIElementCreateSystemWide(), Float(messagingTimeout / .seconds(1)))
         let apps = appsWithWindows(where: include)
         let outputs = Mutex(
             [Result<Output, AccessibilityError>?](repeating: nil, count: apps.count))
@@ -80,30 +113,15 @@ enum AccessibilityWindows {
         return try outputs.withLock { $0 }.compactMap { try $0?.get() }
     }
 
-    /// Moves one app's windows; call it from the worker that read them.
-    static func apply(_ moves: [WindowMove<AXWindow>]) {
-        for (pid, appMoves) in Dictionary(grouping: moves, by: \.window.handle.pid) {
-            // Apps with enhanced UI on (Chromium and Electron while assistive tech runs) animate frame
-            // changes and drop the later ones.
-            let app = AXUIElementCreateApplication(pid)
-            let enhancedUI = "AXEnhancedUserInterface" as CFString
-            var value: CFTypeRef?
-            let hadEnhancedUI =
-                AXUIElementCopyAttributeValue(app, enhancedUI, &value) == .success
-                && value as? Bool == true
-            if hadEnhancedUI {
-                AXUIElementSetAttributeValue(app, enhancedUI, false as CFBoolean)
-            }
-            for move in appMoves {
-                guard
-                    setFrame(
-                        of: move.window.handle.element, from: move.window.frame, to: move.frame)
-                else { break }
-            }
-            if hadEnhancedUI {
-                AXUIElementSetAttributeValue(app, enhancedUI, true as CFBoolean)
-            }
-        }
+    /// The bundle IDs among `bundleIDs` that a running process belongs to.
+    static func runningApps(among bundleIDs: Set<String>) -> Set<String> {
+        guard !bundleIDs.isEmpty else { return [] }
+        // Room for processes that start between the two calls.
+        var pids = [pid_t](repeating: 0, count: Int(max(proc_listallpids(nil, 0), 0)) + 64)
+        let count = proc_listallpids(&pids, Int32(pids.count * MemoryLayout<pid_t>.size))
+        return Set(
+            pids.prefix(Int(max(count, 0))).lazy.compactMap(bundleIdentifier(of:))
+                .filter(bundleIDs.contains))
     }
 
     /// Bundle IDs in the order their first normal-layer window appears, each with its processes.
@@ -135,7 +153,8 @@ enum AccessibilityWindows {
         return apps
     }
 
-    /// One round trip per window; a missing attribute comes back as an error value in its slot.
+    /// One round trip for each process's window list and one per window; a missing attribute comes
+    /// back as an error value in its slot.
     private static func read(_ bundleID: String, pids: [pid_t]) throws(AccessibilityError) -> App {
         let attributes =
             [
@@ -144,12 +163,28 @@ enum AccessibilityWindows {
             ] as CFArray
         var movable: [LiveWindow<AXWindow>] = []
         var windowCount = 0
+        func app(hung: Bool) -> App {
+            App(bundleID: bundleID, movable: movable, windowCount: windowCount, hung: hung)
+        }
         for pid in pids {
-            for window in try windows(of: pid) {
+            var windows: CFTypeRef?
+            let windowsCall = call {
+                AXUIElementCopyAttributeValue(
+                    AXUIElementCreateApplication(pid), kAXWindowsAttribute as CFString, &windows)
+            }
+            // The helper checks no trust up front: without Accessibility access the first call into
+            // any app fails with `apiDisabled`.
+            if windowsCall.status == .apiDisabled {
+                throw .notTrusted
+            }
+            guard !windowsCall.hung else { return app(hung: true) }
+            for window in windows as? [AXUIElement] ?? [] {
                 var copied: CFArray?
-                let status = AXUIElementCopyMultipleAttributeValues(window, attributes, [], &copied)
-                guard status != .cannotComplete else { break }
-                guard status == .success,
+                let attributesCall = call {
+                    AXUIElementCopyMultipleAttributeValues(window, attributes, [], &copied)
+                }
+                guard !attributesCall.hung else { return app(hung: true) }
+                guard attributesCall.status == .success,
                     let values = copied as? [AnyObject], values.count == 6,
                     values[0] as? String == kAXStandardWindowSubrole
                 else { continue }
@@ -168,20 +203,16 @@ enum AccessibilityWindows {
                     ))
             }
         }
-        return App(bundleID: bundleID, movable: movable, windowCount: windowCount)
+        return app(hung: false)
     }
 
-    /// The app's windows. The helper checks no trust up front: without Accessibility access the first
-    /// call into any app fails with `apiDisabled`.
-    private static func windows(of pid: pid_t) throws(AccessibilityError) -> [AXUIElement] {
-        var value: CFTypeRef?
-        switch AXUIElementCopyAttributeValue(
-            AXUIElementCreateApplication(pid), kAXWindowsAttribute as CFString, &value)
-        {
-        case .success: return value as? [AXUIElement] ?? []
-        case .apiDisabled: throw .notTrusted
-        default: return []
-        }
+    /// Makes one call into an app and reports whether the app hung. An app that refuses a call fails
+    /// at once, so a failure that waited at least half the messaging timeout means it stopped
+    /// answering.
+    private static func call(_ body: () -> AXError) -> (status: AXError, hung: Bool) {
+        let start = ContinuousClock.now
+        let status = body()
+        return (status, status == .cannotComplete && .now - start >= messagingTimeout / 2)
     }
 
     /// The identifier of the app bundle whose `Contents/MacOS` holds the process's executable, or nil
@@ -205,22 +236,21 @@ enum AccessibilityWindows {
 
     /// Resizes before and after moving: the first resize keeps the move from being clamped by the old
     /// display, the second applies the target display's constraints. A window already at its target
-    /// size skips the first resize, which would change nothing. Returns false once the app times out.
+    /// size skips the first resize, which would change nothing. Returns whether the app hung.
     private static func setFrame(of window: AXUIElement, from current: CGRect, to frame: CGRect)
         -> Bool
     {
         guard let position = frame.origin.axValue, let size = frame.size.axValue else {
-            return true
+            return false
         }
         var steps = [(kAXPositionAttribute, position), (kAXSizeAttribute, size)]
         if current.size != frame.size {
             steps.insert((kAXSizeAttribute, size), at: 0)
         }
         for (attribute, value) in steps
-        where AXUIElementSetAttributeValue(window, attribute as CFString, value) == .cannotComplete
-        {
-            return false
+        where call({ AXUIElementSetAttributeValue(window, attribute as CFString, value) }).hung {
+            return true
         }
-        return true
+        return false
     }
 }
