@@ -32,11 +32,15 @@ enum AccessibilityError: LocalizedError {
 
 /// Reads and moves windows without AppKit, so the helper pays for CoreGraphics and HIServices only.
 enum AccessibilityWindows {
-    /// Standard, non-minimized, non-full-screen windows of apps whose bundle ID passes `include`,
-    /// front to back within each app.
-    static func windows(where include: (_ bundleID: String) -> Bool) throws -> [LiveWindow<
-        AXWindow
-    >] {
+    /// One pass over the windows of apps whose bundle ID passes `include`.
+    struct Scan {
+        /// Standard, non-minimized, non-full-screen windows, front to back within each app.
+        let movable: [LiveWindow<AXWindow>]
+        /// Apps owning a standard window, minimized and full-screen ones included.
+        let owners: Set<String>
+    }
+
+    static func scan(where include: (_ bundleID: String) -> Bool) throws -> Scan {
         // Caps each call into another app, so an unresponsive app stalls a run by at most a second.
         AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 1)
         // One round trip per window; a missing attribute comes back as an error value in its slot.
@@ -47,34 +51,33 @@ enum AccessibilityWindows {
                 kAXTitleAttribute,
             ] as CFArray
 
-        return try appsWithWindows(where: include).flatMap {
-            pid, bundleID -> [LiveWindow<AXWindow>] in
-            try windows(of: pid).compactMap { window in
+        var movable: [LiveWindow<AXWindow>] = []
+        var owners = Set<String>()
+        for (pid, bundleID) in appsWithWindows(where: include) {
+            for window in try windows(of: pid) {
                 var copied: CFArray?
                 guard
                     AXUIElementCopyMultipleAttributeValues(window, attributes, [], &copied)
                         == .success,
                     let values = copied as? [AnyObject], values.count == 6,
-                    values[0] as? String == kAXStandardWindowSubrole,
-                    values[1] as? Bool != true,
+                    values[0] as? String == kAXStandardWindowSubrole
+                else { continue }
+                owners.insert(bundleID)
+                guard values[1] as? Bool != true,
                     values[2] as? Bool != true,
                     let origin: CGPoint = geometry(values[3]),
                     let size: CGSize = geometry(values[4])
-                else { return nil }
-                return LiveWindow(
-                    handle: AXWindow(element: window, pid: pid),
-                    bundleID: bundleID,
-                    title: values[5] as? String ?? "",
-                    frame: CGRect(origin: origin, size: size)
-                )
+                else { continue }
+                movable.append(
+                    LiveWindow(
+                        handle: AXWindow(element: window, pid: pid),
+                        bundleID: bundleID,
+                        title: values[5] as? String ?? "",
+                        frame: CGRect(origin: origin, size: size)
+                    ))
             }
         }
-    }
-
-    /// The apps in `bundleIDs` that own no normal-layer window: not running, or running with every
-    /// window closed. Minimized, hidden, and full-screen windows count as owned.
-    static func appsWithoutWindows(among bundleIDs: Set<String>) -> Set<String> {
-        bundleIDs.subtracting(appsWithWindows(where: bundleIDs.contains).map(\.bundleID))
+        return Scan(movable: movable, owners: owners)
     }
 
     static func apply(_ moves: [WindowMove<AXWindow>]) {

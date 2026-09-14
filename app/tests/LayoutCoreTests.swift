@@ -138,33 +138,23 @@ struct LayoutCoreTests {
     }
 
     mutating func openingAppsLeaveOnceTheirWindowsSettle() throws {
-        let displays = DisplayArrangement(displays: [Self.laptop])!
-        let frame = CGRect(x: 0, y: 33, width: 500, height: 500)
-        let saved = ["full", "full", "single", "single", "none"].map {
-            Self.window(0, $0, "", frame)
-        }
-        let layout = Layout(
-            name: try LayoutName("L"), screens: captureScreens(of: saved, on: displays),
-            autoRestore: false)
         let start = ContinuousClock.now
         func at(_ milliseconds: Int64) -> ContinuousClock.Instant {
             start + .milliseconds(milliseconds)
         }
-        var opening = OpeningApps(["full", "single", "none"], in: layout, at: start)
-        let first = [Self.window(1, "full", "", .zero), Self.window(2, "single", "", .zero)]
-        let noWindows: [LiveWindow<Int>] = []
+        var opening = OpeningApps(["growing", "single", "none"], at: start)
 
-        opening.observe(first, at: at(1000))
-        expect(opening.bundleIDs == ["full", "single", "none"], "first windows keep apps watched")
-        opening.observe(first + [Self.window(3, "full", "", .zero)], at: at(2500))
-        expect(opening.bundleIDs == ["single", "none"], "the saved window count leaves")
-        opening.observe(first, at: at(2900))
-        expect(opening.bundleIDs == ["single", "none"], "settling counts from the last new window")
-        opening.observe(first, at: at(3000))
-        expect(opening.bundleIDs == ["none"], "windows that stop growing leave")
-        opening.observe(noWindows, at: at(14_999))
+        opening.observe(["growing", "single"], at: at(1000))
+        opening.observe(["growing", "single", "growing"], at: at(2500))
+        expect(opening.bundleIDs == ["growing", "single", "none"], "new windows keep apps watched")
+        opening.observe(["growing", "single", "growing"], at: at(3000))
+        expect(
+            opening.bundleIDs == ["growing", "none"], "settling counts from the last new window")
+        opening.observe(["growing", "growing"], at: at(4500))
+        expect(opening.bundleIDs == ["none"], "a steady window count leaves")
+        opening.observe([], at: at(14_999))
         expect(opening.bundleIDs == ["none"], "an app with no window waits")
-        opening.observe(noWindows, at: start + OpeningApps.timeout)
+        opening.observe([], at: start + OpeningApps.timeout)
         expect(opening.bundleIDs.isEmpty, "the timeout ends the watch")
     }
 

@@ -18,10 +18,10 @@ or when your displays change.
 
 Restore matches saved windows to open windows of the same app by exact title first, then
 front-to-back order, and skips minimized and full-screen windows. It moves the open windows first,
-then opens each app in the layout that has no window, without bringing it forward: it launches an app
-that isn't running and asks a running one to reopen a window. It places an opened app's windows as
-they appear, until the app shows as many windows as the layout saved, gains none for 2 seconds, or
-15 seconds pass. Auto-restore opens apps the same way.
+then opens each app in the layout that has no window, minimized and full-screen ones included,
+without bringing it forward: it launches an app that isn't running and asks a running one to reopen
+a window. It places an opened app's windows as they appear, until the app has shown a window and its
+window count has held for 2 seconds, or 15 seconds pass. Auto-restore opens apps the same way.
 
 ## Install
 
