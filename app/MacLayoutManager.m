@@ -20,6 +20,19 @@ static SMAppService *MLMLoginItem(void) {
   return [NSClassFromString(@"SMAppService") mainAppService];
 }
 
+/// Mixed means registered but not yet approved in System Settings.
+static NSControlStateValue MLMLoginItemState(SMAppServiceStatus status) {
+  switch (status) {
+  case SMAppServiceStatusEnabled:
+    return NSControlStateValueOn;
+  case SMAppServiceStatusRequiresApproval:
+    return NSControlStateValueMixed;
+  case SMAppServiceStatusNotRegistered:
+  case SMAppServiceStatusNotFound:
+    return NSControlStateValueOff;
+  }
+}
+
 /// After a reconfiguration macOS keeps moving windows between displays for a
 /// moment, and it calls back once per affected display. Waiting for quiet
 /// restores once, onto the settled arrangement.
@@ -109,8 +122,12 @@ static NSArray<NSString *> *MLMDisplayArguments(void) {
   NSStatusItem *_statusItem;
   MLMLibrary _library;
   dispatch_queue_t _helperQueue;
+  /// Serial, so status reads and changes land on the checkmark in order.
+  dispatch_queue_t _loginItemQueue;
   dispatch_source_t _settleTimer;
   uint32_t _menuOpenings;
+  /// The Launch at Login checkmark as ServiceManagement last reported it.
+  NSControlStateValue _loginItemState;
 }
 - (void)displaysChanged;
 @end
@@ -136,6 +153,10 @@ static void MLMDisplayReconfigured(CGDirectDisplayID display,
       dispatch_queue_create("com.choandrew.MacLayoutManager.helper",
                             dispatch_queue_attr_make_with_qos_class(
                                 DISPATCH_QUEUE_SERIAL, QOS_CLASS_UTILITY, 0));
+  _loginItemQueue = dispatch_queue_create(
+      "com.choandrew.MacLayoutManager.login-item",
+      dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL,
+                                              QOS_CLASS_USER_INITIATED, 0));
 
   _statusItem = [NSStatusBar.systemStatusBar
       statusItemWithLength:NSSquareStatusItemLength];
@@ -150,12 +171,13 @@ static void MLMDisplayReconfigured(CGDirectDisplayID display,
   CGDisplayRegisterReconfigurationCallback(MLMDisplayReconfigured,
                                            (__bridge void *)self);
   [self runHelper:@[ @MLMVerbList ] kind:MLMRunKindLaunch];
-  if (!AXIsProcessTrusted())
-    [self requestAccessibility:nil];
+  [self ensureAccessibility];
 
-  // First launch only, and not retried if registration fails.
+  // Registers on first launch only, and doesn't retry if registration fails.
   NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
-  if (![defaults boolForKey:MLMLoginItemOfferedKey]) {
+  if ([defaults boolForKey:MLMLoginItemOfferedKey]) {
+    [self refreshLoginItem:nil];
+  } else {
     [defaults setBool:true forKey:MLMLoginItemOfferedKey];
     [self setLoginItem:true userInitiated:false];
   }
@@ -211,23 +233,21 @@ static void MLMDisplayReconfigured(CGDirectDisplayID display,
       _helperQueue,
       dispatch_block_create_with_qos_class(
           DISPATCH_BLOCK_ENFORCE_QOS_CLASS, qos, 0, ^{
+            // About 25 KB on this worker's stack; the main-queue block below
+            // takes its own copy.
+            MLMHelperResult result = {0};
+            bool succeeded = false;
             @autoreleasepool {
-              // Heap: the result is about 25 KB and outlives this block.
-              MLMHelperResult *result = calloc(1, sizeof(*result));
-              const char **argv = calloc(arguments.count + 2, sizeof(*argv));
-              bool succeeded = false;
-              if (result != NULL && argv != NULL) {
-                argv[0] = helper.fileSystemRepresentation;
-                for (NSUInteger index = 0; index < arguments.count; index++)
-                  argv[index + 1] = arguments[index].UTF8String;
-                succeeded = MLMRunHelper(argv, result);
-              }
-              free(argv);
-              dispatch_async(dispatch_get_main_queue(), ^{
-                [self merge:succeeded ? result : NULL kind:kind];
-                free(result);
-              });
+              const char *argv[arguments.count + 2];
+              argv[0] = helper.fileSystemRepresentation;
+              for (NSUInteger index = 0; index < arguments.count; index++)
+                argv[index + 1] = arguments[index].UTF8String;
+              argv[arguments.count + 1] = NULL;
+              succeeded = MLMRunHelper(argv, &result);
             }
+            dispatch_async(dispatch_get_main_queue(), ^{
+              [self merge:succeeded ? &result : NULL kind:kind];
+            });
           }));
 }
 
@@ -306,23 +326,13 @@ static void MLMDisplayReconfigured(CGDirectDisplayID display,
                       action:@selector(requestAccessibility:)
                       layout:nil]];
   }
-  // Read from ServiceManagement on every open, because System Settings can
-  // change it behind the app's back. Mixed means registered but not approved.
+  // System Settings can change the login item behind the app's back, so the
+  // menu opens with the last status read and refreshes it while open.
   NSMenuItem *login = [self item:@"Launch at Login"
                           action:@selector(toggleLaunchAtLogin:)
                           layout:nil];
-  switch (MLMLoginItem().status) {
-  case SMAppServiceStatusEnabled:
-    login.state = NSControlStateValueOn;
-    break;
-  case SMAppServiceStatusRequiresApproval:
-    login.state = NSControlStateValueMixed;
-    break;
-  case SMAppServiceStatusNotRegistered:
-  case SMAppServiceStatusNotFound:
-    login.state = NSControlStateValueOff;
-    break;
-  }
+  login.state = _loginItemState;
+  [self refreshLoginItem:login];
   [menu addItem:login];
   NSMenuItem *quit = [[NSMenuItem alloc] initWithTitle:@"Quit MacLayoutManager"
                                                 action:@selector(terminate:)
@@ -406,12 +416,9 @@ static void MLMDisplayReconfigured(CGDirectDisplayID display,
 }
 
 - (void)toggleAutoRestore:(NSMenuItem *)sender {
-  NSString *name = sender.representedObject;
-  const MLMLayoutSummary *layout = [self layoutNamed:name];
-  if (layout == NULL)
-    return;
+  bool enabled = sender.state == NSControlStateValueOn;
   [self runHelper:@[
-    @MLMVerbSetAutoRestore, name, layout->autoRestore ? @"0" : @"1"
+    @MLMVerbSetAutoRestore, sender.representedObject, enabled ? @"0" : @"1"
   ]
              kind:MLMRunKindUser];
 }
@@ -439,38 +446,42 @@ static void MLMDisplayReconfigured(CGDirectDisplayID display,
 }
 
 - (void)toggleLaunchAtLogin:(NSMenuItem *)sender {
-  (void)sender;
-  SMAppService *loginItem = MLMLoginItem();
-  switch (loginItem.status) {
-  case SMAppServiceStatusEnabled:
-    [self setLoginItem:false userInitiated:true];
-    break;
-  case SMAppServiceStatusRequiresApproval:
-    [loginItem.class openSystemSettingsLoginItems];
-    break;
-  case SMAppServiceStatusNotRegistered:
-  case SMAppServiceStatusNotFound:
-    [self setLoginItem:true userInitiated:true];
-    break;
+  if (sender.state == NSControlStateValueMixed) {
+    [MLMLoginItem().class openSystemSettingsLoginItems];
+  } else {
+    [self setLoginItem:sender.state == NSControlStateValueOff
+         userInitiated:true];
   }
 }
 
-/// Registering with launchd is a synchronous XPC round trip, so it runs off the
-/// main thread. A toggle that needs approval opens Login Items settings, and
-/// one that fails beeps.
+/// Reads the login item's status into the checkmark and into `item`, which may
+/// still be on screen. Each ServiceManagement status read, registration, and
+/// removal is a synchronous XPC round trip, so all of them run off the main
+/// thread.
+- (void)refreshLoginItem:(NSMenuItem *)item {
+  dispatch_async(_loginItemQueue, ^{
+    NSControlStateValue state = MLMLoginItemState(MLMLoginItem().status);
+    dispatch_async(dispatch_get_main_queue(), ^{
+      self->_loginItemState = state;
+      item.state = state;
+    });
+  });
+}
+
+/// A toggle that needs approval opens Login Items settings, and one that fails
+/// beeps.
 - (void)setLoginItem:(bool)enabled userInitiated:(bool)userInitiated {
-  qos_class_t qos =
-      userInitiated ? QOS_CLASS_USER_INITIATED : QOS_CLASS_UTILITY;
-  dispatch_async(dispatch_get_global_queue(qos, 0), ^{
+  dispatch_async(_loginItemQueue, ^{
     SMAppService *loginItem = MLMLoginItem();
     NSError *error = nil;
     bool succeeded = enabled ? [loginItem registerAndReturnError:&error]
                              : [loginItem unregisterAndReturnError:&error];
-    bool needsApproval = loginItem.status == SMAppServiceStatusRequiresApproval;
-    if (!userInitiated)
-      return;
+    SMAppServiceStatus status = loginItem.status;
     dispatch_async(dispatch_get_main_queue(), ^{
-      if (needsApproval) {
+      self->_loginItemState = MLMLoginItemState(status);
+      if (!userInitiated)
+        return;
+      if (status == SMAppServiceStatusRequiresApproval) {
         [loginItem.class openSystemSettingsLoginItems];
       } else if (!succeeded) {
         NSBeep();

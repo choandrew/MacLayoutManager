@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 /// Runs one command against the saved layouts, writes the output HelperProtocol.h specifies, and
@@ -59,11 +60,7 @@ enum HelperMain {
             let name = try LayoutName(name)
             try updated.replaceScreens(of: name, with: capture(on: displays))
         case .restore(let name, let displays):
-            let name = try LayoutName(name)
-            guard let layout = library.layout(named: name) else {
-                throw LibraryError.unknownLayout(name)
-            }
-            try restore(layout, on: displays)
+            try restore(library.layout(named: LayoutName(name)), on: displays)
         case .autoRestore(let displays):
             if let layout = library.autoRestoreLayout(for: displays.ids) {
                 try restore(layout, on: displays)
@@ -82,7 +79,13 @@ enum HelperMain {
     }
 
     private static func capture(on displays: DisplayArrangement) throws -> [ScreenLayout] {
-        captureScreens(of: try AccessibilityWindows.scan { _ in true }.movable, on: displays)
+        let everyApp = { (_: String) in true }
+        let windows = try AccessibilityWindows.forEachApp(where: everyApp) { app in
+            app.movable.map {
+                LiveWindow(handle: (), bundleID: $0.bundleID, title: $0.title, frame: $0.frame)
+            }
+        }
+        return captureScreens(of: windows.flatMap { $0 }, on: displays)
     }
 
     /// Names the apps a restore couldn't open, whose windows stay unplaced.
@@ -94,37 +97,62 @@ enum HelperMain {
         }
     }
 
-    /// Moves the layout's open windows first, then opens its apps that own no standard window and
-    /// places their windows as they appear.
+    /// Moves the layout's open windows first, then launches its apps that aren't running and places
+    /// their windows as they appear, until they settle or the displays change. A display change makes
+    /// `displays` stale and starts the host's own auto-restore.
+    ///
+    /// A running app is never asked to reopen a window: Accessibility lists only the current Space's
+    /// windows, so an app whose windows sit on another Space or in full screen looks windowless and
+    /// would open a stray one.
     private static func restore(_ layout: Layout, on displays: DisplayArrangement) throws {
+        let activeDisplays = ActiveDisplay.all()
         let bundleIDs = Set(layout.screens.flatMap { $0.windows.map(\.bundleID) })
+        // Every app owning a normal-layer window is running and gets a count.
         let windowless = bundleIDs.subtracting(
-            try place(layout, appsIn: bundleIDs, on: displays).owners)
+            try place(layout, appsIn: bundleIDs, on: displays).keys)
+        let notRunning = windowless.subtracting(AccessibilityWindows.runningApps(among: windowless))
 
-        let unopened = openApps(windowless)
-        var opening = OpeningApps(windowless.subtracting(unopened), at: .now)
+        let unopened = openApps(notRunning)
+        var opening = OpeningApps(notRunning.subtracting(unopened), at: .now)
         while !opening.bundleIDs.isEmpty {
             Thread.sleep(forTimeInterval: OpeningApps.pollInterval / .seconds(1))
-            let scan = try place(layout, appsIn: opening.bundleIDs, on: displays)
-            opening.observe(scan.movable.map(\.bundleID), at: .now)
+            guard ActiveDisplay.all() == activeDisplays else { break }
+            opening.observe(try place(layout, appsIn: opening.bundleIDs, on: displays), at: .now)
         }
         if !unopened.isEmpty {
             throw UnopenedApps(bundleIDs: unopened)
         }
     }
 
+    /// Moves the windows of the layout's apps in `bundleIDs` into place, each app on its own worker,
+    /// and returns the standard window count of each app that owns a normal-layer window.
     private static func place(
         _ layout: Layout, appsIn bundleIDs: Set<String>, on displays: DisplayArrangement
-    ) throws -> AccessibilityWindows.Scan {
-        let scan = try AccessibilityWindows.scan { bundleIDs.contains($0) }
-        AccessibilityWindows.apply(
-            restorePlan(for: layout, windows: scan.movable, displays: displays))
-        return scan
+    ) throws -> [String: Int] {
+        let counts = try AccessibilityWindows.forEachApp(where: bundleIDs.contains) { app in
+            app.apply(restorePlan(for: layout, windows: app.movable, displays: displays))
+            return (app.bundleID, app.windowCount)
+        }
+        return Dictionary(uniqueKeysWithValues: counts)
     }
 
-    /// Opens each app without bringing it forward: `open` launches an app that isn't running and
-    /// asks a running one to reopen a window. Returns the apps it couldn't open, such as uninstalled
-    /// ones.
+    private struct ActiveDisplay: Equatable {
+        let id: CGDirectDisplayID
+        let bounds: CGRect
+
+        /// Every display reconfiguration changes this list: connecting, disconnecting, arranging,
+        /// or resizing a display.
+        static func all() -> [ActiveDisplay] {
+            var count: UInt32 = 0
+            guard CGGetActiveDisplayList(0, nil, &count) == .success else { return [] }
+            var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
+            guard CGGetActiveDisplayList(count, &ids, &count) == .success else { return [] }
+            return ids.prefix(Int(count)).map { ActiveDisplay(id: $0, bounds: CGDisplayBounds($0)) }
+        }
+    }
+
+    /// Launches each app without bringing it forward. Returns the apps `open` couldn't launch, such as
+    /// uninstalled ones.
     private static func openApps(_ bundleIDs: Set<String>) -> Set<String> {
         let launches = bundleIDs.map { bundleID -> (String, Process?) in
             let process = Process()

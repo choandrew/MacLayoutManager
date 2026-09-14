@@ -56,8 +56,10 @@ struct LiveWindow<Handle> {
     let frame: CGRect
 }
 
+extension LiveWindow: Sendable where Handle: Sendable {}
+
 struct WindowMove<Handle> {
-    let handle: Handle
+    let window: LiveWindow<Handle>
     let frame: CGRect
 }
 
@@ -97,7 +99,7 @@ func restorePlan<Handle>(
     var moves: [WindowMove<Handle>] = []
     func claim(_ window: LiveWindow<Handle>, for frame: CGRect) {
         if window.frame != frame {
-            moves.append(WindowMove(handle: window.handle, frame: frame))
+            moves.append(WindowMove(window: window, frame: frame))
         }
     }
 
@@ -140,15 +142,14 @@ struct OpeningApps {
 
     var bundleIDs: Set<String> { Set(watched.keys) }
 
-    /// Records the windows seen at `now`, one bundle ID per window, and drops the apps that settled.
-    mutating func observe(_ windowOwners: [String], at now: ContinuousClock.Instant) {
+    /// Records each app's standard window count at `now` and drops the apps that settled.
+    mutating func observe(_ windowCounts: [String: Int], at now: ContinuousClock.Instant) {
         guard now - started < Self.timeout else {
             watched = [:]
             return
         }
-        let counts = Dictionary(windowOwners.map { ($0, 1) }, uniquingKeysWith: +)
         for (bundleID, last) in watched {
-            let count = counts[bundleID, default: 0]
+            let count = windowCounts[bundleID, default: 0]
             let since = count == last.count ? last.since : now
             watched[bundleID] = count > 0 && now - since >= Self.settleTime ? nil : (count, since)
         }
