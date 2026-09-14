@@ -1,0 +1,30 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+jobs:
+  build:
+    # Arm64 with Xcode 26, matching build.sh's Apple silicon target.
+    runs-on: macos-26
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - run: app/build.sh
+
+      - run: ditto -c -k --keepParent app/build/MacLayoutManager.app MacLayoutManager.zip
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="v$(plutil -extract CFBundleShortVersionString raw app/Info.plist)"
+          [ "$GITHUB_REF_NAME" = "$version" ] \
+            || { echo "Tag $GITHUB_REF_NAME does not match Info.plist version $version" >&2; exit 1; }
+          gh release create "$GITHUB_REF_NAME" MacLayoutManager.zip --verify-tag --generate-notes
