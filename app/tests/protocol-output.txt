@@ -1,0 +1,6 @@
+V	1
+S	2
+L	Desk	1	Built-in Retina Display + DELL U2720Q
+L	Couch	0	Built-in Retina Display
+E	A layout named “Desk” already exists.
+D

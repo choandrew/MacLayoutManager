@@ -1,31 +1,65 @@
 # MacLayoutManager
 
-A menu bar app that saves named window layouts across multiple displays and restores them on demand or when your displays change.
+A menu bar app that saves named window layouts across multiple displays and restores them on demand
+or when your displays change.
 
 ## Features
 
-- **Named layouts.** *Save Current Layout…* records every standard window of every regular app, grouped by the display it sits on. Saving under an existing name replaces that layout.
-- **Multi-monitor.** Displays are identified by their CoreGraphics UUID. Window frames are stored as fractions of the display's visible area, so a layout rescales to a different resolution. Windows saved on a display that is no longer connected land on the main display.
-- **Auto-restore on display change.** *Manage Layouts → (layout) → Auto-Restore on These Displays* restores that layout 2 seconds after any display reconfiguration (connect, disconnect, resolution change, wake) that leaves exactly the displays it was saved with. Each display set has at most one auto-restore layout.
-- **Launch at Login** toggle, so auto-restore keeps working after a reboot.
+- **Named layouts.** *Save Current Layout…* records every standard window of every app with a window
+  on screen, grouped by the display it sits on. Saving under an existing name asks before replacing.
+- **Multi-monitor.** Displays are identified by their CoreGraphics UUID. Window frames are stored as
+  fractions of the display's visible area, so a layout rescales to a different resolution. Windows
+  saved on a display that is no longer connected land on the main display.
+- **Auto-restore on display change.** *Manage Layouts → (layout) → Auto-Restore on These Displays*
+  restores that layout 2 seconds after a display reconfiguration (connect, disconnect, resolution
+  change, wake) that leaves exactly the displays it was saved with. Each display set has at most one
+  auto-restore layout.
+- **Launch at Login**, on by default after the first launch, with the opt-out remembered.
 
-Restore matches saved windows to open windows of the same app by exact title first, then front-to-back order. It only moves windows that are already open: it doesn't launch apps, and it skips minimized and full-screen windows.
+Restore matches saved windows to open windows of the same app by exact title first, then
+front-to-back order. It only moves windows already open: it launches no apps and skips minimized and
+full-screen windows.
+
+## Install
+
+Requires macOS 15 or newer, Apple silicon, and the Xcode command line tools.
+
+```sh
+./setup.sh
+```
+
+The script creates the `MacLayoutManager Dev` signing identity if it is missing, builds, replaces
+any copy in `/Applications`, and launches the app. Then grant **System Settings → Privacy & Security
+→ Accessibility**. The stable signing identity keeps that grant across rebuilds.
+
+## Design
+
+The process that stays running is a 90 KB Objective-C executable: one status item with a drawn
+icon, the layout names in fixed-size C records, and a display reconfiguration callback. It builds
+the menu only while it is open, runs no timers, and loads ServiceManagement only to change the
+login item. Measured on macOS 26.6 before the menu first opens, it settles at 12.8-13.0 MB, below
+an otherwise empty status-item app using an SF Symbol icon (13.0-13.6 MB).
+
+Every command runs in `Contents/Helpers/MacLayoutHelper`, a 180 KB Swift executable that loads the
+layouts file, captures or moves windows through the Accessibility API (one round trip per window,
+and only for apps with a window on screen), writes the file, prints a tab-separated summary, and
+exits. A `list` run peaks at 1.8 MB. `app/HelperProtocol.h` specifies its arguments and output, and
+the Swift helper imports that header, so both sides share one set of limits and verbs. The host
+serializes helper runs, and the helper holds a lock around each load-change-save cycle.
+
+Layouts live in `~/Library/Application Support/MacLayoutManager/layouts.json`. The helper validates
+the file on every run (unique names, at most 64 layouts, one auto-restore layout per display set)
+and never writes a file it could not read.
 
 ## Build
 
-Requires macOS 15 and the Swift 6 toolchain (Xcode or Command Line Tools).
-
 ```sh
-./scripts/build-app.sh          # produces build/MacLayoutManager.app
-cp -R build/MacLayoutManager.app /Applications/
-open /Applications/MacLayoutManager.app
-swift test                      # layout matching, scaling, and library validation
+cd app
+./make_signing_cert.sh  # once, for a stable local signing identity
+./build.sh
 ```
 
-## Permissions
-
-Reading and moving other apps' windows requires **System Settings → Privacy & Security → Accessibility**. The app is ad-hoc signed, so macOS ties the grant to the exact binary: after each rebuild, remove MacLayoutManager from the Accessibility list and add it again.
-
-## Data
-
-Layouts live in `~/Library/Application Support/MacLayoutManager/layouts.json`. The app validates the file at launch (unique names, one auto-restore layout per display set) and refuses to start rather than overwrite a file it can't read.
+The build runs the Swift model tests and the protocol parser tests, compiles size-optimized arm64
+binaries with link-time optimization, signs the helper and the app, and verifies the signature. It
+signs with `MacLayoutManager Dev` when that identity exists and ad hoc otherwise; set
+`CODESIGN_IDENTITY` to override.
