@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 /// Runs one command against the saved layouts, writes the output HelperProtocol.h specifies, and
@@ -78,7 +79,13 @@ enum HelperMain {
     }
 
     private static func capture(on displays: DisplayArrangement) throws -> [ScreenLayout] {
-        captureScreens(of: try AccessibilityWindows.scan { _ in true }.movable, on: displays)
+        let everyApp = { (_: String) in true }
+        let windows = try AccessibilityWindows.forEachApp(where: everyApp) { app in
+            app.movable.map {
+                LiveWindow(handle: (), bundleID: $0.bundleID, title: $0.title, frame: $0.frame)
+            }
+        }
+        return captureScreens(of: windows.flatMap { $0 }, on: displays)
     }
 
     /// Names the apps a restore couldn't open, whose windows stay unplaced.
@@ -91,31 +98,52 @@ enum HelperMain {
     }
 
     /// Moves the layout's open windows first, then opens its apps that own no standard window and
-    /// places their windows as they appear.
+    /// places their windows as they appear, until they settle or the displays change. A display
+    /// change makes `displays` stale and starts the host's own auto-restore.
     private static func restore(_ layout: Layout, on displays: DisplayArrangement) throws {
         let bundleIDs = Set(layout.screens.flatMap { $0.windows.map(\.bundleID) })
-        let windowless = bundleIDs.subtracting(
-            try place(layout, appsIn: bundleIDs, on: displays).owners)
+        let windowCounts = try place(layout, appsIn: bundleIDs, on: displays)
+        let windowless = bundleIDs.filter { windowCounts[$0, default: 0] == 0 }
 
         let unopened = openApps(windowless)
         var opening = OpeningApps(windowless.subtracting(unopened), at: .now)
+        let activeDisplays = ActiveDisplay.all()
         while !opening.bundleIDs.isEmpty {
             Thread.sleep(forTimeInterval: OpeningApps.pollInterval / .seconds(1))
-            let scan = try place(layout, appsIn: opening.bundleIDs, on: displays)
-            opening.observe(scan.movable.map(\.bundleID), at: .now)
+            guard ActiveDisplay.all() == activeDisplays else { break }
+            opening.observe(try place(layout, appsIn: opening.bundleIDs, on: displays), at: .now)
         }
         if !unopened.isEmpty {
             throw UnopenedApps(bundleIDs: unopened)
         }
     }
 
+    /// Moves the windows of the layout's apps in `bundleIDs` into place, each app on its own worker,
+    /// and returns each app's standard window count.
     private static func place(
         _ layout: Layout, appsIn bundleIDs: Set<String>, on displays: DisplayArrangement
-    ) throws -> AccessibilityWindows.Scan {
-        let scan = try AccessibilityWindows.scan { bundleIDs.contains($0) }
-        AccessibilityWindows.apply(
-            restorePlan(for: layout, windows: scan.movable, displays: displays))
-        return scan
+    ) throws -> [String: Int] {
+        let counts = try AccessibilityWindows.forEachApp(where: bundleIDs.contains) { app in
+            AccessibilityWindows.apply(
+                restorePlan(for: layout, windows: app.movable, displays: displays))
+            return (app.bundleID, app.windowCount)
+        }
+        return Dictionary(uniqueKeysWithValues: counts)
+    }
+
+    private struct ActiveDisplay: Equatable {
+        let id: CGDirectDisplayID
+        let bounds: CGRect
+
+        /// Every display reconfiguration changes this list: connecting, disconnecting, arranging,
+        /// or resizing a display.
+        static func all() -> [ActiveDisplay] {
+            var count: UInt32 = 0
+            guard CGGetActiveDisplayList(0, nil, &count) == .success else { return [] }
+            var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
+            guard CGGetActiveDisplayList(count, &ids, &count) == .success else { return [] }
+            return ids.prefix(Int(count)).map { ActiveDisplay(id: $0, bounds: CGDisplayBounds($0)) }
+        }
     }
 
     /// Opens each app without bringing it forward: `open` launches an app that isn't running and

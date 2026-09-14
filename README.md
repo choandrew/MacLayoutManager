@@ -5,8 +5,8 @@ or when your displays change.
 
 ## Features
 
-- **Named layouts.** *Save Current Layout…* records every standard window of every app with a window
-  on screen, grouped by the display it sits on. Saving under an existing name asks before replacing.
+- **Named layouts.** *Save Current Layout…* records every standard window that isn't minimized or
+  full screen, grouped by the display it sits on. Saving under an existing name asks before replacing.
 - **Multi-monitor.** Displays are identified by their CoreGraphics UUID. Window frames are stored as
   fractions of the display's visible area, so a layout rescales to a different resolution. Windows
   saved on a display that is no longer connected land on the main display.
@@ -21,7 +21,8 @@ front-to-back order, and skips minimized and full-screen windows. It moves the o
 then opens each app in the layout that has no window, minimized and full-screen ones included,
 without bringing it forward: it launches an app that isn't running and asks a running one to reopen
 a window. It places an opened app's windows as they appear, until the app has shown a window and its
-window count has held for 2 seconds, or 15 seconds pass. Auto-restore opens apps the same way.
+window count has held for 2 seconds, 15 seconds pass, or the displays change. Auto-restore opens apps
+the same way.
 
 ## Install
 
@@ -39,14 +40,17 @@ any copy in `/Applications`, and launches the app. Then grant **System Settings 
 
 The process that stays running is a 90 KB Objective-C executable: one status item with a drawn
 icon, the layout names in fixed-size C records, and a display reconfiguration callback. It builds
-the menu only while it is open, runs no timers, and loads ServiceManagement only to change the
-login item. Measured on macOS 26.6 before the menu first opens, it settles at 12.8-13.0 MB, below
-an otherwise empty status-item app using an SF Symbol icon (13.0-13.6 MB).
+the menu only while it is open, runs no periodic timers, and reads the login item's status off the
+main thread, so opening the menu never waits on ServiceManagement. Measured on macOS
+26.6 before the menu first opens, it settles at 12.8-13.0 MB, below an otherwise empty status-item
+app using an SF Symbol icon (13.0-13.6 MB).
 
-Every command runs in `Contents/Helpers/MacLayoutHelper`, a 180 KB Swift executable that loads the
-layouts file, captures or moves windows through the Accessibility API (one round trip per window,
-and only for apps with a window on screen), writes the file, prints a tab-separated summary, and
-exits. A `list` run peaks at 1.8 MB. `app/HelperProtocol.h` specifies its arguments and output, and
+Every command runs in `Contents/Helpers/MacLayoutHelper`, a 200 KB Swift executable that loads the
+layouts file, captures or moves windows through the Accessibility API, writes the file, prints a
+tab-separated summary, and exits. A `list` run peaks at 1.8 MB. Each app answers Accessibility calls
+one at a time on its main thread, so the helper gives every app its own worker and runs the apps in
+parallel: a capture or restore lasts as long as its slowest app rather than all apps together, and an
+app that leaves a call unanswered for a second gets no further calls in that pass. `app/HelperProtocol.h` specifies its arguments and output, and
 the Swift helper imports that header, so both sides share one set of limits and verbs. The host
 serializes helper runs, and the helper holds a lock around each load-change-save cycle, so a command
 chosen while a restore waits for opened apps' windows runs after that restore.

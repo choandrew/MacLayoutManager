@@ -1,14 +1,15 @@
 import ApplicationServices
 import CoreGraphics
 import Foundation
+import Synchronization
 
 struct AXWindow {
     let element: AXUIElement
     let pid: pid_t
 }
 
-/// A geometry type and the `AXValueType` that carries it, so a read can't ask for one and decode the
-/// other.
+/// A geometry type and the `AXValueType` that carries it, so a read or write can't pair one type
+/// with the other's tag.
 protocol AXGeometry {
     static var axType: AXValueType { get }
     static var zero: Self { get }
@@ -22,6 +23,20 @@ extension CGSize: AXGeometry {
     static var axType: AXValueType { .cgSize }
 }
 
+extension AXGeometry where Self: BitwiseCopyable {
+    init?(axValue: AnyObject) {
+        guard CFGetTypeID(axValue) == AXValueGetTypeID() else { return nil }
+        var result = Self.zero
+        guard AXValueGetValue(axValue as! AXValue, Self.axType, &result) else { return nil }
+        self = result
+    }
+
+    var axValue: AXValue? {
+        var copy = self
+        return AXValueCreate(Self.axType, &copy)
+    }
+}
+
 enum AccessibilityError: LocalizedError {
     case notTrusted
 
@@ -32,56 +47,42 @@ enum AccessibilityError: LocalizedError {
 
 /// Reads and moves windows without AppKit, so the helper pays for CoreGraphics and HIServices only.
 enum AccessibilityWindows {
-    /// One pass over the windows of apps whose bundle ID passes `include`.
-    struct Scan {
-        /// Standard, non-minimized, non-full-screen windows, front to back within each app.
+    /// One app's standard windows, read by the worker that handles that app.
+    struct App {
+        let bundleID: String
+        /// Standard, non-minimized, non-full-screen windows, front to back.
         let movable: [LiveWindow<AXWindow>]
-        /// Apps owning a standard window, minimized and full-screen ones included.
-        let owners: Set<String>
+        /// Standard windows, minimized and full-screen ones included.
+        let windowCount: Int
     }
 
-    static func scan(where include: (_ bundleID: String) -> Bool) throws -> Scan {
-        // Caps each call into another app, so an unresponsive app stalls a run by at most a second.
+    /// Reads the windows of each app whose bundle ID passes `include` and runs `body` on them, with
+    /// one worker per app and apps in parallel, and returns the outputs in window list order. An app
+    /// answers Accessibility calls one at a time on its main thread, so a run lasts as long as its
+    /// slowest app rather than all apps together. `AXUIElement` is not `Sendable`, so each element
+    /// stays on the worker that read it and only `body`'s output crosses threads.
+    static func forEachApp<Output: Sendable>(
+        where include: (_ bundleID: String) -> Bool,
+        _ body: @Sendable (App) -> Output
+    ) throws -> [Output] {
+        // Caps each call into another app, for the whole process; an app that times out gets no
+        // further calls this pass, so an unresponsive app stalls a run by about a second.
         AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 1)
-        // One round trip per window; a missing attribute comes back as an error value in its slot.
-        let attributes =
-            [
-                kAXSubroleAttribute, kAXMinimizedAttribute, "AXFullScreen", kAXPositionAttribute,
-                kAXSizeAttribute,
-                kAXTitleAttribute,
-            ] as CFArray
-
-        var movable: [LiveWindow<AXWindow>] = []
-        var owners = Set<String>()
-        for (pid, bundleID) in appsWithWindows(where: include) {
-            for window in try windows(of: pid) {
-                var copied: CFArray?
-                guard
-                    AXUIElementCopyMultipleAttributeValues(window, attributes, [], &copied)
-                        == .success,
-                    let values = copied as? [AnyObject], values.count == 6,
-                    values[0] as? String == kAXStandardWindowSubrole
-                else { continue }
-                owners.insert(bundleID)
-                guard values[1] as? Bool != true,
-                    values[2] as? Bool != true,
-                    let origin: CGPoint = geometry(values[3]),
-                    let size: CGSize = geometry(values[4])
-                else { continue }
-                movable.append(
-                    LiveWindow(
-                        handle: AXWindow(element: window, pid: pid),
-                        bundleID: bundleID,
-                        title: values[5] as? String ?? "",
-                        frame: CGRect(origin: origin, size: size)
-                    ))
+        let apps = appsWithWindows(where: include)
+        let outputs = Mutex(
+            [Result<Output, AccessibilityError>?](repeating: nil, count: apps.count))
+        DispatchQueue.concurrentPerform(iterations: apps.count) { index in
+            let output = Result { () throws(AccessibilityError) in
+                try body(read(apps[index].bundleID, pids: apps[index].pids))
             }
+            outputs.withLock { $0[index] = output }
         }
-        return Scan(movable: movable, owners: owners)
+        return try outputs.withLock { $0 }.compactMap { try $0?.get() }
     }
 
+    /// Moves one app's windows; call it from the worker that read them.
     static func apply(_ moves: [WindowMove<AXWindow>]) {
-        for (pid, appMoves) in Dictionary(grouping: moves, by: \.handle.pid) {
+        for (pid, appMoves) in Dictionary(grouping: moves, by: \.window.handle.pid) {
             // Apps with enhanced UI on (Chromium and Electron while assistive tech runs) animate frame
             // changes and drop the later ones.
             let app = AXUIElementCreateApplication(pid)
@@ -94,7 +95,10 @@ enum AccessibilityWindows {
                 AXUIElementSetAttributeValue(app, enhancedUI, false as CFBoolean)
             }
             for move in appMoves {
-                setFrame(of: move.handle.element, to: move.frame)
+                guard
+                    setFrame(
+                        of: move.window.handle.element, from: move.window.frame, to: move.frame)
+                else { break }
             }
             if hadEnhancedUI {
                 AXUIElementSetAttributeValue(app, enhancedUI, true as CFBoolean)
@@ -102,40 +106,86 @@ enum AccessibilityWindows {
         }
     }
 
-    /// Owners of normal-layer windows, on screen or not, since a hidden app keeps its windows off screen.
-    /// Apps with no window at all cost no Accessibility round trip.
+    /// Bundle IDs in the order their first normal-layer window appears, each with its processes.
+    /// Hidden apps keep their windows off screen, so off-screen windows count. Apps with no window
+    /// at all cost no Accessibility round trip.
     private static func appsWithWindows(where include: (String) -> Bool) -> [(
-        pid: pid_t, bundleID: String
+        bundleID: String, pids: [pid_t]
     )] {
         // Walked as Foundation objects; bridging every entry to a Swift dictionary first costs more.
         let info = CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID) as NSArray?
         var seen = Set<pid_t>()
-        return (info ?? []).compactMap { entry in
+        var apps: [(bundleID: String, pids: [pid_t])] = []
+        var indices: [String: Int] = [:]
+        for entry in info ?? [] {
             guard let window = entry as? NSDictionary,
                 window[kCGWindowLayer] as? Int == 0,
                 let pid = window[kCGWindowOwnerPID] as? pid_t,
                 seen.insert(pid).inserted,
                 let bundleID = bundleIdentifier(of: pid),
                 include(bundleID)
-            else { return nil }
-            return (pid, bundleID)
+            else { continue }
+            if let index = indices[bundleID] {
+                apps[index].pids.append(pid)
+            } else {
+                indices[bundleID] = apps.count
+                apps.append((bundleID, [pid]))
+            }
         }
+        return apps
+    }
+
+    /// One round trip per window; a missing attribute comes back as an error value in its slot.
+    private static func read(_ bundleID: String, pids: [pid_t]) throws(AccessibilityError) -> App {
+        let attributes =
+            [
+                kAXSubroleAttribute, kAXMinimizedAttribute, "AXFullScreen", kAXPositionAttribute,
+                kAXSizeAttribute, kAXTitleAttribute,
+            ] as CFArray
+        var movable: [LiveWindow<AXWindow>] = []
+        var windowCount = 0
+        for pid in pids {
+            for window in try windows(of: pid) {
+                var copied: CFArray?
+                let status = AXUIElementCopyMultipleAttributeValues(window, attributes, [], &copied)
+                guard status != .cannotComplete else { break }
+                guard status == .success,
+                    let values = copied as? [AnyObject], values.count == 6,
+                    values[0] as? String == kAXStandardWindowSubrole
+                else { continue }
+                windowCount += 1
+                guard values[1] as? Bool != true,
+                    values[2] as? Bool != true,
+                    let origin = CGPoint(axValue: values[3]),
+                    let size = CGSize(axValue: values[4])
+                else { continue }
+                movable.append(
+                    LiveWindow(
+                        handle: AXWindow(element: window, pid: pid),
+                        bundleID: bundleID,
+                        title: values[5] as? String ?? "",
+                        frame: CGRect(origin: origin, size: size)
+                    ))
+            }
+        }
+        return App(bundleID: bundleID, movable: movable, windowCount: windowCount)
     }
 
     /// The app's windows. The helper checks no trust up front: without Accessibility access the first
     /// call into any app fails with `apiDisabled`.
-    private static func windows(of pid: pid_t) throws -> [AXUIElement] {
+    private static func windows(of pid: pid_t) throws(AccessibilityError) -> [AXUIElement] {
         var value: CFTypeRef?
         switch AXUIElementCopyAttributeValue(
             AXUIElementCreateApplication(pid), kAXWindowsAttribute as CFString, &value)
         {
         case .success: return value as? [AXUIElement] ?? []
-        case .apiDisabled: throw AccessibilityError.notTrusted
+        case .apiDisabled: throw .notTrusted
         default: return []
         }
     }
 
-    /// The identifier of the bundle whose `Contents/MacOS` holds the process's executable.
+    /// The identifier of the app bundle whose `Contents/MacOS` holds the process's executable, or nil
+    /// for an XPC service, which is part of another app rather than an app a layout can open.
     private static func bundleIdentifier(of pid: pid_t) -> String? {
         // PROC_PIDPATHINFO_MAXSIZE, which Swift can't import.
         var buffer = [UInt8](repeating: 0, count: 4 * Int(MAXPATHLEN))
@@ -145,25 +195,32 @@ enum AccessibilityWindows {
         guard let executable = path.range(of: "/Contents/MacOS/", options: .backwards) else {
             return nil
         }
-        return Bundle(path: String(path[..<executable.lowerBound]))?.bundleIdentifier
+        // Reading Info.plist directly is 2-3x faster than a cold `Bundle(path:)`.
+        let plist = URL(filePath: path[..<executable.lowerBound] + "/Contents/Info.plist")
+        guard let info = try? NSDictionary(contentsOf: plist, error: ()),
+            info["CFBundlePackageType"] as? String != "XPC!"
+        else { return nil }
+        return info["CFBundleIdentifier"] as? String
     }
 
     /// Resizes before and after moving: the first resize keeps the move from being clamped by the old
-    /// display, the second applies the target display's constraints.
-    private static func setFrame(of window: AXUIElement, to frame: CGRect) {
-        var origin = frame.origin
-        var size = frame.size
-        guard let position = AXValueCreate(.cgPoint, &origin),
-            let dimensions = AXValueCreate(.cgSize, &size)
-        else { return }
-        AXUIElementSetAttributeValue(window, kAXSizeAttribute as CFString, dimensions)
-        AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, position)
-        AXUIElementSetAttributeValue(window, kAXSizeAttribute as CFString, dimensions)
-    }
-
-    private static func geometry<T: AXGeometry & BitwiseCopyable>(_ value: AnyObject) -> T? {
-        guard CFGetTypeID(value) == AXValueGetTypeID() else { return nil }
-        var result = T.zero
-        return AXValueGetValue(value as! AXValue, T.axType, &result) ? result : nil
+    /// display, the second applies the target display's constraints. A window already at its target
+    /// size skips the first resize, which would change nothing. Returns false once the app times out.
+    private static func setFrame(of window: AXUIElement, from current: CGRect, to frame: CGRect)
+        -> Bool
+    {
+        guard let position = frame.origin.axValue, let size = frame.size.axValue else {
+            return true
+        }
+        var steps = [(kAXPositionAttribute, position), (kAXSizeAttribute, size)]
+        if current.size != frame.size {
+            steps.insert((kAXSizeAttribute, size), at: 0)
+        }
+        for (attribute, value) in steps
+        where AXUIElementSetAttributeValue(window, attribute as CFString, value) == .cannotComplete
+        {
+            return false
+        }
+        return true
     }
 }

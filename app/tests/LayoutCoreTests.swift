@@ -97,7 +97,7 @@ struct LayoutCoreTests {
             Self.window(2, "com.apple.Terminal", "zsh", .zero),
         ]
         let moves = restorePlan(for: layout, windows: moved, displays: displays)
-        expect(moves.map(\.handle) == [1, 2], "every window moves")
+        expect(moves.map(\.window.handle) == [1, 2], "every window moves")
         expect(moves.map(\.frame) == saved.map(\.frame), "frames round-trip exactly")
         expect(
             restorePlan(for: layout, windows: saved, displays: displays).isEmpty,
@@ -119,7 +119,7 @@ struct LayoutCoreTests {
             Self.window(3, "unrelated", "Notes", .zero),
         ]
         let moves = restorePlan(for: layout, windows: live, displays: displays)
-        expect(moves.map(\.handle) == [2, 1], "title match claims first")
+        expect(moves.map(\.window.handle) == [2, 1], "title match claims first")
         expect(moves.map(\.frame) == [saved[1].frame, saved[0].frame], "frames follow matches")
     }
 
@@ -144,17 +144,17 @@ struct LayoutCoreTests {
         }
         var opening = OpeningApps(["growing", "single", "none"], at: start)
 
-        opening.observe(["growing", "single"], at: at(1000))
-        opening.observe(["growing", "single", "growing"], at: at(2500))
+        opening.observe(["growing": 1, "single": 1], at: at(1000))
+        opening.observe(["growing": 2, "single": 1], at: at(2500))
         expect(opening.bundleIDs == ["growing", "single", "none"], "new windows keep apps watched")
-        opening.observe(["growing", "single", "growing"], at: at(3000))
+        opening.observe(["growing": 2, "single": 1], at: at(3000))
         expect(
             opening.bundleIDs == ["growing", "none"], "settling counts from the last new window")
-        opening.observe(["growing", "growing"], at: at(4500))
+        opening.observe(["growing": 2], at: at(4500))
         expect(opening.bundleIDs == ["none"], "a steady window count leaves")
-        opening.observe([], at: at(14_999))
+        opening.observe([:], at: at(14_999))
         expect(opening.bundleIDs == ["none"], "an app with no window waits")
-        opening.observe([], at: start + OpeningApps.timeout)
+        opening.observe([:], at: start + OpeningApps.timeout)
         expect(opening.bundleIDs.isEmpty, "the timeout ends the watch")
     }
 
