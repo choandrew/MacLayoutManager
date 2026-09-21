@@ -6,9 +6,9 @@ or when your displays change.
 ## Features
 
 - **Named layouts.** *Save Current Layout…* records every standard window that isn't minimized or
-  full screen, grouped by the display it sits on. Saving under an existing name asks before
-  overwriting. Click a layout to restore it, or hover it for *Restore*, *Overwrite with Current
-  Layout…*, *Auto-Restore on These Displays*, *Rename…*, and *Delete…*.
+  full screen, grouped by the display it sits on. Saving under an existing name overwrites that
+  layout. Click a layout to restore it, or hover it for *Restore*, *Overwrite with Current
+  Layout*, *Auto-Restore on These Displays*, *Rename…*, and *Delete…*.
 - **Multi-monitor.** Displays are identified by their CoreGraphics UUID. Window frames are stored as
   fractions of the display's visible area, so a layout rescales to a different resolution. Windows
   saved on a display that is no longer connected land on the main display.
