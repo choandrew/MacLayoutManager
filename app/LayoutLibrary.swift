@@ -54,13 +54,12 @@ struct LayoutLibrary: Equatable {
         }
     }
 
-    /// Keeps the layout's auto-restore, taking it over from any other layout saved with the new displays.
+    /// A replaced layout auto-restores like a new one, taking over from any other layout saved with the
+    /// new displays.
     mutating func replaceScreens(of name: LayoutName, with screens: [ScreenLayout]) throws {
         try modify(named: name) { layouts, i in
             layouts[i].screens = screens
-            if layouts[i].autoRestore {
-                Self.claimAutoRestore(at: i, in: &layouts)
-            }
+            Self.claimAutoRestore(at: i, in: &layouts)
         }
     }
 

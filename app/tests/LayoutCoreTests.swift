@@ -30,7 +30,7 @@ struct LayoutCoreTests {
             try tests.restoreScalesWindowsFromMissingDisplayOntoMain()
             try tests.openingAppsLeaveOnceTheirWindowsSettle()
             try tests.identicalMonitorsGetDistinctIDsLeftToRight()
-            try tests.replacingScreensKeepsAutoRestoreAndTakesItOver()
+            try tests.replacingScreensTakesOverAutoRestore()
             try tests.autoRestoreIsExclusivePerDisplaySet()
             try tests.namesAreValidatedAndUnique()
             try tests.fileRoundTripsAndLoadRejectsConflicts()
@@ -170,7 +170,7 @@ struct LayoutCoreTests {
         expect(DisplayArrangement(displays: []) == nil, "no displays, no arrangement")
     }
 
-    mutating func replacingScreensKeepsAutoRestoreAndTakesItOver() throws {
+    mutating func replacingScreensTakesOverAutoRestore() throws {
         let desk = try LayoutName("Desk")
         let docked = try LayoutName("Docked")
         var library = LayoutLibrary()
@@ -185,6 +185,10 @@ struct LayoutCoreTests {
         expect(
             try library.layout(named: desk).displaySet == [Self.laptop.id, Self.monitor.id],
             "screens replaced")
+
+        try library.setAutoRestore(desk, false)
+        try library.replaceScreens(of: desk, with: [Self.screen(Self.laptop)])
+        expect(try library.layout(named: desk).autoRestore, "replacing re-enables auto-restore")
     }
 
     mutating func autoRestoreIsExclusivePerDisplaySet() throws {

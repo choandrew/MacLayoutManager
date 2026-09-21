@@ -15,8 +15,8 @@ or when your displays change.
 - **Auto-restore on display change.** A layout with *Auto-Restore on These Displays* checked restores
   2 seconds after a display reconfiguration (connect, disconnect, resolution change, wake) that
   leaves exactly the displays it was saved with. Each display set has at most one auto-restore
-  layout: a newly saved layout starts checked and takes over from any older layout on the same
-  displays.
+  layout: a newly saved or overwritten layout starts checked and takes over from any older layout on
+  the same displays.
 - **Launch at Login**, on by default after the first launch, with the opt-out remembered.
 
 Restore matches saved windows to open windows of the same app by exact title first, then
