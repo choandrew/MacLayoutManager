@@ -285,22 +285,11 @@ static void MLMDisplayReconfigured(CGDirectDisplayID display,
 
   if (_library.count > 0) {
     [menu addItem:NSMenuItem.separatorItem];
-    [menu addItem:[NSMenuItem sectionHeaderWithTitle:@"Restore"]];
-    NSMenu *manage = [NSMenu new];
+    [menu addItem:[NSMenuItem sectionHeaderWithTitle:@"Layouts"]];
     for (uint8_t index = 0; index < _library.count; index++) {
       const MLMLayoutSummary *layout = &_library.layouts[index];
       NSString *name = [NSString stringWithUTF8String:layout->name];
       NSString *displays = [NSString stringWithUTF8String:layout->displays];
-
-      NSMenuItem *restore = [self item:name
-                                action:@selector(restoreLayout:)
-                                layout:name];
-      NSString *subtitle =
-          layout->autoRestore
-              ? [@"Auto-restores · " stringByAppendingString:displays]
-              : displays;
-      restore.subtitle = subtitle.length > 0 ? subtitle : nil;
-      [menu addItem:restore];
 
       NSMenuItem *autoRestore = [self item:@"Auto-Restore on These Displays"
                                     action:@selector(toggleAutoRestore:)
@@ -309,15 +298,30 @@ static void MLMDisplayReconfigured(CGDirectDisplayID display,
           layout->autoRestore ? NSControlStateValueOn : NSControlStateValueOff;
       NSMenu *actions = [NSMenu new];
       actions.itemArray = @[
+        [self item:@"Restore" action:@selector(restoreLayout:) layout:name],
+        [self item:@"Overwrite with Current Layout…"
+            action:@selector(overwriteLayout:)
+            layout:name],
+        NSMenuItem.separatorItem,
         autoRestore,
         NSMenuItem.separatorItem,
         [self item:@"Rename…" action:@selector(renameLayout:) layout:name],
         [self item:@"Delete…" action:@selector(deleteLayout:) layout:name],
       ];
-      [manage addItem:[self submenuItem:name menu:actions]];
+
+      // A submenu item with its own action, rather than submenuAction:, is
+      // choosable: clicking restores the layout and hovering opens `actions`.
+      NSMenuItem *row = [self item:name
+                            action:@selector(restoreLayout:)
+                            layout:name];
+      NSString *subtitle =
+          layout->autoRestore
+              ? [@"Auto-restores · " stringByAppendingString:displays]
+              : displays;
+      row.subtitle = subtitle.length > 0 ? subtitle : nil;
+      row.submenu = actions;
+      [menu addItem:row];
     }
-    [menu addItem:NSMenuItem.separatorItem];
-    [menu addItem:[self submenuItem:@"Manage Layouts" menu:manage]];
   }
 
   [menu addItem:NSMenuItem.separatorItem];
@@ -363,14 +367,6 @@ static void MLMDisplayReconfigured(CGDirectDisplayID display,
   return item;
 }
 
-- (NSMenuItem *)submenuItem:(NSString *)title menu:(NSMenu *)submenu {
-  NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:title
-                                                action:nil
-                                         keyEquivalent:@""];
-  item.submenu = submenu;
-  return item;
-}
-
 - (const MLMLayoutSummary *)layoutNamed:(NSString *)name {
   const char *text = name.UTF8String;
   for (uint8_t index = 0; index < _library.count; index++) {
@@ -395,17 +391,27 @@ static void MLMDisplayReconfigured(CGDirectDisplayID display,
                                           .whitespaceAndNewlineCharacterSet];
   NSString *command = @MLMVerbAdd;
   if ([self layoutNamed:trimmed] != NULL) {
-    NSString *message = [NSString stringWithFormat:@"Replace “%@”?", trimmed];
-    if (![self confirm:message
-                  info:@"Its saved windows will be replaced with the current "
-                       @"ones."
-                action:@"Replace"
-             accessory:nil]) {
+    if (![self confirmOverwrite:trimmed])
       return;
-    }
     command = @MLMVerbReplace;
   }
   [self runHelperOnDisplays:@[ command, name ] kind:MLMRunKindUser];
+}
+
+- (void)overwriteLayout:(NSMenuItem *)sender {
+  NSString *name = sender.representedObject;
+  if (![self ensureAccessibility] || ![self confirmOverwrite:name])
+    return;
+  [self runHelperOnDisplays:@[ @MLMVerbReplace, name ] kind:MLMRunKindUser];
+}
+
+- (bool)confirmOverwrite:(NSString *)name {
+  NSString *message = [NSString stringWithFormat:@"Overwrite “%@”?", name];
+  return [self confirm:message
+                  info:@"Its saved windows will be replaced with the current "
+                       @"ones."
+                action:@"Overwrite"
+             accessory:nil];
 }
 
 - (void)restoreLayout:(NSMenuItem *)sender {

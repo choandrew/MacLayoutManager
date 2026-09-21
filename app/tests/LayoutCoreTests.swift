@@ -176,8 +176,6 @@ struct LayoutCoreTests {
         var library = LayoutLibrary()
         try library.add(desk, screens: [Self.screen(Self.laptop)])
         try library.add(docked, screens: [Self.screen(Self.laptop), Self.screen(Self.monitor)])
-        try library.setAutoRestore(desk, true)
-        try library.setAutoRestore(docked, true)
 
         try library.replaceScreens(
             of: desk, with: [Self.screen(Self.laptop), Self.screen(Self.monitor)])
@@ -197,14 +195,14 @@ struct LayoutCoreTests {
         try library.add(focus, screens: [Self.screen(Self.laptop), Self.screen(Self.monitor)])
         try library.add(wide, screens: [Self.screen(Self.monitor), Self.screen(Self.laptop)])
         try library.add(travel, screens: [Self.screen(Self.laptop)])
-        try library.setAutoRestore(focus, true)
-        try library.setAutoRestore(travel, true)
-        try library.setAutoRestore(wide, true)
+        expect(
+            library.layouts.map(\.autoRestore) == [false, true, true],
+            "the newest layout per display set auto-restores")
 
+        try library.setAutoRestore(focus, true)
+        expect(library.layouts.map(\.autoRestore) == [true, false, true], "enabling takes over")
         expect(
-            library.layouts.map(\.autoRestore) == [false, true, true], "one owner per display set")
-        expect(
-            library.autoRestoreLayout(for: [Self.laptop.id, Self.monitor.id])?.name == wide,
+            library.autoRestoreLayout(for: [Self.laptop.id, Self.monitor.id])?.name == focus,
             "both displays")
         expect(library.autoRestoreLayout(for: [Self.laptop.id])?.name == travel, "laptop only")
         expect(library.autoRestoreLayout(for: [Self.monitor.id]) == nil, "unsaved display set")
@@ -249,7 +247,6 @@ struct LayoutCoreTests {
             relativeFrame: CGRect(x: 0.1, y: 0.2, width: 0.3, height: 0.4))
         var library = LayoutLibrary()
         try library.add(a, screens: [Self.screen(Self.laptop, [placement])])
-        try library.setAutoRestore(a, true)
         try LayoutFile.save(library, to: url)
         expect(try LayoutFile.load(from: url) == library, "file round-trips")
 
@@ -301,8 +298,9 @@ struct LayoutCoreTests {
         let desk = try LayoutName("Desk")
         var library = LayoutLibrary()
         try library.add(desk, screens: [Self.screen(Self.laptop), Self.screen(Self.monitor)])
-        try library.setAutoRestore(desk, true)
-        try library.add(LayoutName("Couch"), screens: [Self.screen(Self.laptop)])
+        let couch = try LayoutName("Couch")
+        try library.add(couch, screens: [Self.screen(Self.laptop)])
+        try library.setAutoRestore(couch, false)
 
         let output = Outcome.loaded(library, failure: LibraryError.duplicateName(desk)).output
         let fixture = try String(contentsOfFile: path, encoding: .utf8)
