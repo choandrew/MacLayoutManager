@@ -46,8 +46,12 @@ struct LayoutLibrary: Equatable {
         layouts.first { $0.autoRestore && $0.displaySet == displays }
     }
 
+    /// A new layout auto-restores, taking over from any other layout saved with the same displays.
     mutating func add(_ name: LayoutName, screens: [ScreenLayout]) throws {
-        try modify { $0.append(Layout(name: name, screens: screens, autoRestore: false)) }
+        try modify { layouts in
+            layouts.append(Layout(name: name, screens: screens, autoRestore: true))
+            Self.claimAutoRestore(at: layouts.count - 1, in: &layouts)
+        }
     }
 
     /// Keeps the layout's auto-restore, taking it over from any other layout saved with the new displays.

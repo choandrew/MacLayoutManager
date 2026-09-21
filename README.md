@@ -6,14 +6,17 @@ or when your displays change.
 ## Features
 
 - **Named layouts.** *Save Current Layout…* records every standard window that isn't minimized or
-  full screen, grouped by the display it sits on. Saving under an existing name asks before replacing.
+  full screen, grouped by the display it sits on. Saving under an existing name asks before
+  overwriting. Click a layout to restore it, or hover it for *Restore*, *Overwrite with Current
+  Layout…*, *Auto-Restore on These Displays*, *Rename…*, and *Delete…*.
 - **Multi-monitor.** Displays are identified by their CoreGraphics UUID. Window frames are stored as
   fractions of the display's visible area, so a layout rescales to a different resolution. Windows
   saved on a display that is no longer connected land on the main display.
-- **Auto-restore on display change.** *Manage Layouts → (layout) → Auto-Restore on These Displays*
-  restores that layout 2 seconds after a display reconfiguration (connect, disconnect, resolution
-  change, wake) that leaves exactly the displays it was saved with. Each display set has at most one
-  auto-restore layout.
+- **Auto-restore on display change.** A layout with *Auto-Restore on These Displays* checked restores
+  2 seconds after a display reconfiguration (connect, disconnect, resolution change, wake) that
+  leaves exactly the displays it was saved with. Each display set has at most one auto-restore
+  layout: a newly saved layout starts checked and takes over from any older layout on the same
+  displays.
 - **Launch at Login**, on by default after the first launch, with the opt-out remembered.
 
 Restore matches saved windows to open windows of the same app by exact title first, then
