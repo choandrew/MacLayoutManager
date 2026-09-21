@@ -299,7 +299,7 @@ static void MLMDisplayReconfigured(CGDirectDisplayID display,
       NSMenu *actions = [NSMenu new];
       actions.itemArray = @[
         [self item:@"Restore" action:@selector(restoreLayout:) layout:name],
-        [self item:@"Overwrite with Current Layout…"
+        [self item:@"Overwrite with Current Layout"
             action:@selector(overwriteLayout:)
             layout:name],
         NSMenuItem.separatorItem,
@@ -389,29 +389,16 @@ static void MLMDisplayReconfigured(CGDirectDisplayID display,
   NSString *trimmed = [name
       stringByTrimmingCharactersInSet:NSCharacterSet
                                           .whitespaceAndNewlineCharacterSet];
-  NSString *command = @MLMVerbAdd;
-  if ([self layoutNamed:trimmed] != NULL) {
-    if (![self confirmOverwrite:trimmed])
-      return;
-    command = @MLMVerbReplace;
-  }
+  NSString *command =
+      [self layoutNamed:trimmed] != NULL ? @MLMVerbReplace : @MLMVerbAdd;
   [self runHelperOnDisplays:@[ command, name ] kind:MLMRunKindUser];
 }
 
 - (void)overwriteLayout:(NSMenuItem *)sender {
   NSString *name = sender.representedObject;
-  if (![self ensureAccessibility] || ![self confirmOverwrite:name])
+  if (![self ensureAccessibility])
     return;
   [self runHelperOnDisplays:@[ @MLMVerbReplace, name ] kind:MLMRunKindUser];
-}
-
-- (bool)confirmOverwrite:(NSString *)name {
-  NSString *message = [NSString stringWithFormat:@"Overwrite “%@”?", name];
-  return [self confirm:message
-                  info:@"Its saved windows will be replaced with the current "
-                       @"ones."
-                action:@"Overwrite"
-             accessory:nil];
 }
 
 - (void)restoreLayout:(NSMenuItem *)sender {
